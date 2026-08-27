@@ -486,9 +486,10 @@ bool EreaderSyncActivity::syncWallpaper(const OpdsServer& server, const RemoteIt
   const std::string stem = wallpaperStem(item.name);
   const std::string finalName = direct ? item.name : stem + ".bmp";
   const std::string finalPath = std::string(SLEEP_DIR) + "/" + finalName;
+  const std::string effectiveVersion = jpeg ? "photo-fs-v1:" + item.etag : item.etag;
   const std::string* storedVersion = versionFor('W', item.name);
 
-  if (!item.etag.empty() && storedVersion && *storedVersion == item.etag && Storage.exists(finalPath.c_str())) {
+  if (!item.etag.empty() && storedVersion && *storedVersion == effectiveVersion && Storage.exists(finalPath.c_str())) {
     wallpapers.unchanged++;
     return true;
   }
@@ -527,7 +528,7 @@ bool EreaderSyncActivity::syncWallpaper(const OpdsServer& server, const RemoteIt
     bool converted = false;
     if (Storage.openFileForRead(LOG_TAG, WALLPAPER_TEMP_JPG, jpegFile) &&
         Storage.openFileForWrite(LOG_TAG, bmpPart, bmpFile)) {
-      converted = JpegToBmpConverter::jpegFileToBmpStream(jpegFile, bmpFile, true);
+      converted = JpegToBmpConverter::jpegFileToPhotoBmpStream(jpegFile, bmpFile, true);
       if (converted) {
         bmpFile.flush();
       }
@@ -544,7 +545,7 @@ bool EreaderSyncActivity::syncWallpaper(const OpdsServer& server, const RemoteIt
   }
 
   existed ? wallpapers.updated++ : wallpapers.added++;
-  setVersion('W', item.name, item.etag);
+  setVersion('W', item.name, effectiveVersion);
   return true;
 }
 

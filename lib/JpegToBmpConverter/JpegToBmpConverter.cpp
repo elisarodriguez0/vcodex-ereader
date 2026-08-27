@@ -305,6 +305,55 @@ int32_t bmpJpegSeek(JPEGFILE* pFile, int32_t pos) {
 }
 
 // Context passed to the JPEGDEC draw callback via setUserPointer()
+// Photo-oriented 4-gray Floyd-Steinberg dithering.
+// This keeps photographic sleep-screen tones natural instead of using the
+// aggressive cover-oriented thresholds tuned elsewhere for the X4 panel.
+class PhotoFloydSteinbergDitherer {
+ public:
+  explicit PhotoFloydSteinbergDitherer(int width) : width(width) {
+    currentError = new int16_t[width + 2]();
+    nextError = new int16_t[width + 2]();
+  }
+
+  ~PhotoFloydSteinbergDitherer() {
+    delete[] currentError;
+    delete[] nextError;
+  }
+
+  PhotoFloydSteinbergDitherer(const PhotoFloydSteinbergDitherer&) = delete;
+  PhotoFloydSteinbergDitherer& operator=(const PhotoFloydSteinbergDitherer&) = delete;
+
+  uint8_t processPixel(int gray, int x) {
+    int adjusted = gray + currentError[x + 1];
+    if (adjusted < 0) adjusted = 0;
+    if (adjusted > 255) adjusted = 255;
+
+    int level = (adjusted + 42) / 85;
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    const int quantizedValue = level * 85;
+    const int error = adjusted - quantizedValue;
+
+    currentError[x + 2] += static_cast<int16_t>((error * 7) / 16);
+    nextError[x] += static_cast<int16_t>((error * 3) / 16);
+    nextError[x + 1] += static_cast<int16_t>((error * 5) / 16);
+    nextError[x + 2] += static_cast<int16_t>(error / 16);
+    return static_cast<uint8_t>(level);
+  }
+
+  void nextRow() {
+    int16_t* oldCurrent = currentError;
+    currentError = nextError;
+    nextError = oldCurrent;
+    memset(nextError, 0, (width + 2) * sizeof(int16_t));
+  }
+
+ private:
+  int width;
+  int16_t* currentError;
+  int16_t* nextError;
+};
+
 struct BmpConvertCtx {
   Print* bmpOut;
   int srcWidth;
@@ -331,6 +380,7 @@ struct BmpConvertCtx {
 
   std::unique_ptr<AtkinsonDitherer> atkinsonDitherer;
   std::unique_ptr<FloydSteinbergDitherer> fsDitherer;
+  std::unique_ptr<PhotoFloydSteinbergDitherer> photoDitherer;
   std::unique_ptr<Atkinson1BitDitherer> atkinson1BitDitherer;
 
   bool error;
@@ -355,7 +405,9 @@ static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) 
     for (int x = 0; x < ctx->outWidth; x++) {
       const uint8_t gray = adjustPixel(srcRow[x]);
       uint8_t twoBit;
-      if (ctx->atkinsonDitherer) {
+      if (ctx->photoDitherer) {
+        twoBit = ctx->photoDitherer->processPixel(gray, x);
+      } else if (ctx->atkinsonDitherer) {
         twoBit = ctx->atkinsonDitherer->processPixel(gray, x);
       } else if (ctx->fsDitherer) {
         twoBit = ctx->fsDitherer->processPixel(gray, x);
@@ -364,7 +416,9 @@ static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) 
       }
       ctx->bmpRow[(x * 2) / 8] |= (twoBit << (6 - ((x * 2) % 8)));
     }
-    if (ctx->atkinsonDitherer)
+    if (ctx->photoDitherer)
+      ctx->photoDitherer->nextRow();
+    else if (ctx->atkinsonDitherer)
       ctx->atkinsonDitherer->nextRow();
     else if (ctx->fsDitherer)
       ctx->fsDitherer->nextRow();
@@ -394,7 +448,9 @@ static void flushScaledRow(BmpConvertCtx* ctx) {
     for (int x = 0; x < ctx->outWidth; x++) {
       const uint8_t gray = adjustPixel((ctx->rowCount[x] > 0) ? (ctx->rowAccum[x] / ctx->rowCount[x]) : 0);
       uint8_t twoBit;
-      if (ctx->atkinsonDitherer) {
+      if (ctx->photoDitherer) {
+        twoBit = ctx->photoDitherer->processPixel(gray, x);
+      } else if (ctx->atkinsonDitherer) {
         twoBit = ctx->atkinsonDitherer->processPixel(gray, x);
       } else if (ctx->fsDitherer) {
         twoBit = ctx->fsDitherer->processPixel(gray, x);
@@ -403,7 +459,9 @@ static void flushScaledRow(BmpConvertCtx* ctx) {
       }
       ctx->bmpRow[(x * 2) / 8] |= (twoBit << (6 - ((x * 2) % 8)));
     }
-    if (ctx->atkinsonDitherer)
+    if (ctx->photoDitherer)
+      ctx->photoDitherer->nextRow();
+    else if (ctx->atkinsonDitherer)
       ctx->atkinsonDitherer->nextRow();
     else if (ctx->fsDitherer)
       ctx->fsDitherer->nextRow();
@@ -493,7 +551,7 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
 
 // Internal implementation with configurable target size and bit depth
 bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bmpOut, int targetWidth, int targetHeight,
-                                                     bool oneBit, bool crop, bool* permanentFailure) {
+                                                     bool oneBit, bool crop, bool* permanentFailure, bool photoMode) {
   // Helper: mark a failure as permanent (bad JPEG data) or transient (OOM).
   // Permanent = the same JPEG bytes will always fail; writing a sentinel stops endless retries.
   // Transient = might succeed later if memory frees up; no sentinel should be written.
@@ -653,7 +711,14 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
       return false;
     }
   } else if (!USE_8BIT_OUTPUT) {
-    if (USE_ATKINSON) {
+    if (photoMode) {
+      ctx.photoDitherer = makeUniqueNoThrow<PhotoFloydSteinbergDitherer>(outWidth);
+      if (!ctx.photoDitherer) {
+        LOG_ERR("JPG", "OOM: PhotoFloydSteinbergDitherer");
+        setPermanent(false);
+        return false;
+      }
+    } else if (USE_ATKINSON) {
       ctx.atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(outWidth);
       if (!ctx.atkinsonDitherer) {
         LOG_ERR("JPG", "OOM: AtkinsonDitherer");
@@ -691,6 +756,13 @@ bool JpegToBmpConverter::jpegFileToBmpStream(FsFile& jpegFile, Print& bmpOut, bo
   const int targetWidth = display.getDisplayHeight();
   const int targetHeight = display.getDisplayWidth();
   return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetWidth, targetHeight, false, crop);
+}
+
+// Photo-oriented 4-gray conversion for custom sleep screens.
+bool JpegToBmpConverter::jpegFileToPhotoBmpStream(FsFile& jpegFile, Print& bmpOut, bool crop) {
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetWidth, targetHeight, false, crop, nullptr, true);
 }
 
 // Convert with custom target size (for thumbnails, 2-bit)

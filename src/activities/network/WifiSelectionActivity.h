@@ -125,7 +125,7 @@ class WifiSelectionActivity final : public Activity {
   void onComplete(bool connected);
 
  public:
-  explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = false,
+  explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true,
                                  bool syncRtcOnConnect = true, bool autoConnectOnly = false)
       : Activity("WifiSelection", renderer, mappedInput),
         allowAutoConnect(autoConnect),
