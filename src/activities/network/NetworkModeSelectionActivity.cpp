@@ -8,7 +8,7 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int MENU_ITEM_COUNT = 3;
+constexpr int MENU_ITEM_COUNT = 4;
 }  // namespace
 
 void NetworkModeSelectionActivity::onEnter() {
@@ -37,6 +37,8 @@ void NetworkModeSelectionActivity::loop() {
       mode = NetworkMode::CONNECT_CALIBRE;
     } else if (selectedIndex == 2) {
       mode = NetworkMode::CREATE_HOTSPOT;
+    } else if (selectedIndex == 3) {
+      mode = NetworkMode::EREADER_SYNC;
     }
     onModeSelected(mode);
     return;
@@ -66,16 +68,24 @@ void NetworkModeSelectionActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   // Menu items and descriptions
-  static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,
-                                                       StrId::STR_CREATE_HOTSPOT};
-  static constexpr StrId menuDescs[MENU_ITEM_COUNT] = {StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC,
-                                                       StrId::STR_HOTSPOT_DESC};
-  static constexpr UIIcon menuIcons[MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot};
-
   GUI.drawList(
       renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(MENU_ITEM_COUNT), selectedIndex,
-      [](int index) { return std::string(I18N.get(menuItems[index])); },
-      [](int index) { return std::string(I18N.get(menuDescs[index])); }, [](int index) { return menuIcons[index]; });
+      [](int index) {
+        if (index == 3) return std::string("Sync all");
+        static constexpr StrId menuItems[] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,
+                                              StrId::STR_CREATE_HOTSPOT};
+        return std::string(I18N.get(menuItems[index]));
+      },
+      [](int index) {
+        if (index == 3) return std::string("Sync day, books and wallpapers");
+        static constexpr StrId menuDescs[] = {StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC,
+                                              StrId::STR_HOTSPOT_DESC};
+        return std::string(I18N.get(menuDescs[index]));
+      },
+      [](int index) {
+        static constexpr UIIcon menuIcons[] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot};
+        return index == 3 ? UIIcon::Transfer : menuIcons[index];
+      });
 
   // Draw help text at bottom
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

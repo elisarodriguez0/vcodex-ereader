@@ -15,6 +15,7 @@
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
+#include "activities/network/EreaderSyncActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/NetworkMemory.h"
@@ -125,11 +126,31 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Connect to Calibre";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
+  } else if (mode == NetworkMode::EREADER_SYNC) {
+    modeName = "Sync all";
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
+
+  if (mode == NetworkMode::EREADER_SYNC) {
+    state = WebServerActivityState::MODE_SELECTION;
+    startActivityForResult(std::make_unique<EreaderSyncActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) {
+                             state = WebServerActivityState::MODE_SELECTION;
+                             startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                                                    [this](const ActivityResult& result) {
+                                                      if (result.isCancelled) {
+                                                        onGoHome();
+                                                      } else {
+                                                        onNetworkModeSelected(
+                                                            std::get<NetworkModeResult>(result.data).mode);
+                                                      }
+                                                    });
+                           });
+    return;
+  }
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     startActivityForResult(
