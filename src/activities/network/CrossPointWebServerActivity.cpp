@@ -175,7 +175,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 
     state = WebServerActivityState::WIFI_SELECTION;
     LOG_DBG("WEBACT", "Launching WifiSelectionActivity...");
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false),
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, true),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& wifi = std::get<WifiResult>(result.data);
