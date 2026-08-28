@@ -37,6 +37,7 @@
 #include "activities/apps/ReadingStatsActivity.h"
 #include "activities/apps/SleepAppActivity.h"
 #include "activities/apps/SyncDayActivity.h"
+#include "activities/network/EreaderSyncActivity.h"
 #include "activities/settings/ClockSyncActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -57,6 +58,7 @@ constexpr uint32_t FNV1A_PRIME = 16777619UL;
 struct HomeShortcutEntry {
   const ShortcutDefinition* definition = nullptr;
   bool isAppsHub = false;
+  bool isSyncAll = false;
 };
 
 std::string getRecentBookConfirmationLabel(const RecentBook& book) {
@@ -169,69 +171,39 @@ RecentBook resolveFavoriteForHome(const FavoriteBook& favorite) {
   return book;
 }
 
-std::vector<HomeShortcutEntry> getHomeShortcutEntries(const bool hasOpdsServers) {
-  std::vector<HomeShortcutEntry> entries;
-  entries.push_back(HomeShortcutEntry{nullptr, true});
+const ShortcutDefinition* findHomeShortcut(const ShortcutId id) {
+  return findShortcutDefinition(id);
+}
 
-  for (const auto& definition : getShortcutDefinitions()) {
-    if (definition.id == ShortcutId::OpdsBrowser && !hasOpdsServers) {
-      continue;
-    }
-    const auto location = static_cast<CrossPointSettings::SHORTCUT_LOCATION>(SETTINGS.*(definition.locationPtr));
-    if (location == CrossPointSettings::SHORTCUT_HOME && getShortcutVisibility(definition)) {
-      entries.push_back(HomeShortcutEntry{&definition});
-    }
+std::vector<HomeShortcutEntry> getHomeShortcutEntries(const bool) {
+  std::vector<HomeShortcutEntry> entries;
+  entries.reserve(5);
+
+  if (const auto* browse = findHomeShortcut(ShortcutId::BrowseFiles)) {
+    entries.push_back(HomeShortcutEntry{browse, false, false});
+  }
+  if (const auto* stats = findHomeShortcut(ShortcutId::ReadingStats)) {
+    entries.push_back(HomeShortcutEntry{stats, false, false});
+  }
+  if (const auto* heatmap = findHomeShortcut(ShortcutId::ReadingHeatmap)) {
+    entries.push_back(HomeShortcutEntry{heatmap, false, false});
   }
 
-  std::stable_sort(entries.begin(), entries.end(), [](const HomeShortcutEntry& lhs, const HomeShortcutEntry& rhs) {
-    const uint8_t lhsOrder = lhs.isAppsHub ? SETTINGS.appsHubShortcutOrder : getShortcutOrder(*lhs.definition);
-    const uint8_t rhsOrder = rhs.isAppsHub ? SETTINGS.appsHubShortcutOrder : getShortcutOrder(*rhs.definition);
-    return lhsOrder < rhsOrder;
-  });
-
+  entries.push_back(HomeShortcutEntry{nullptr, false, true});
+  entries.push_back(HomeShortcutEntry{nullptr, true, false});
   return entries;
 }
 
-// Builds the carousel shortcut list without truncating configured Home entries.
-// Settings is still injected if missing, and Apps remains pinned last so the
-// user always has an escape hatch even with aggressive shortcut customization.
-std::vector<HomeShortcutEntry> buildCarouselEntries(const std::vector<HomeShortcutEntry>& all) {
-  std::vector<HomeShortcutEntry> result;
-  HomeShortcutEntry appsEntry{nullptr, true};
-  bool foundApps = false;
-  bool foundSettings = false;
-
-  for (const auto& e : all) {
-    if (e.isAppsHub) {
-      appsEntry = e;
-      foundApps = true;
-    } else {
-      if (e.definition && e.definition->id == ShortcutId::Settings) {
-        foundSettings = true;
-      }
-      result.push_back(e);
-    }
-  }
-
-  if (!foundSettings) {
-    for (const auto& def : getShortcutDefinitions()) {
-      if (def.id == ShortcutId::Settings) {
-        result.push_back(HomeShortcutEntry{&def});
-        foundSettings = true;
-        break;
-      }
-    }
-  }
-
-  if (foundApps) {
-    result.push_back(appsEntry);
-  }
-  return result;
-}
+// Home is intentionally fixed for this fork. Carousel and non-carousel themes
+// use the same five shortcuts and the same order.
+std::vector<HomeShortcutEntry> buildCarouselEntries(const std::vector<HomeShortcutEntry>& all) { return all; }
 
 std::string getHomeShortcutTitle(const HomeShortcutEntry& entry) {
   if (entry.isAppsHub) {
     return tr(STR_APPS);
+  }
+  if (entry.isSyncAll) {
+    return "Sync all";
   }
   if (!entry.definition) {
     return "";
@@ -240,6 +212,9 @@ std::string getHomeShortcutTitle(const HomeShortcutEntry& entry) {
 }
 
 std::string getHomeShortcutSubtitle(const HomeShortcutEntry& entry) {
+  if (entry.isSyncAll) {
+    return "Books, wallpapers and day";
+  }
   return entry.definition ? ShortcutUiMetadata::getSubtitle(*entry.definition) : "";
 }
 
@@ -247,11 +222,14 @@ UIIcon getHomeShortcutIcon(const HomeShortcutEntry& entry) {
   if (entry.isAppsHub) {
     return UIIcon::Apps;
   }
+  if (entry.isSyncAll) {
+    return UIIcon::Transfer;
+  }
   return entry.definition ? entry.definition->icon : UIIcon::Folder;
 }
 
 bool showHomeShortcutAccessory(const HomeShortcutEntry& entry) {
-  return entry.definition && ShortcutUiMetadata::showAccessory(*entry.definition);
+  return !entry.isSyncAll && entry.definition && ShortcutUiMetadata::showAccessory(*entry.definition);
 }
 
 bool isLyraCarouselTheme() {
@@ -978,6 +956,9 @@ void HomeActivity::loop() {
     const auto& selectedEntry = homeEntries[homeIndex];
     if (selectedEntry.isAppsHub) {
       onAppsOpen();
+    } else if (selectedEntry.isSyncAll) {
+      startActivityForResult(std::make_unique<EreaderSyncActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { requestFreshHomeRender(true); });
     } else if (selectedEntry.definition) {
       switch (selectedEntry.definition->id) {
         case ShortcutId::BrowseFiles:

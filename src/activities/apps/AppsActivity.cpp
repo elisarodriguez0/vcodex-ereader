@@ -26,6 +26,25 @@
 #include "util/ShortcutUiMetadata.h"
 
 namespace {
+
+bool isFixedHomeShortcut(const ShortcutId id) {
+  return id == ShortcutId::BrowseFiles || id == ShortcutId::ReadingStats || id == ShortcutId::ReadingHeatmap;
+}
+
+std::vector<const ShortcutDefinition*> buildFixedAppShortcuts() {
+  std::vector<const ShortcutDefinition*> shortcuts;
+  shortcuts.reserve(getShortcutDefinitions().size());
+
+  for (const auto& definition : getShortcutDefinitions()) {
+    if (isFixedHomeShortcut(definition.id) || definition.id == ShortcutId::OpdsBrowser) {
+      continue;
+    }
+    shortcuts.push_back(&definition);
+  }
+
+  return shortcuts;
+}
+
 std::string buildAppsHeaderSubtitle(const int selectedIndex, const int totalItems, const int itemsPerPage) {
   if (totalItems <= 0) {
     return "";
@@ -40,14 +59,7 @@ std::string buildAppsHeaderSubtitle(const int selectedIndex, const int totalItem
 
 void AppsActivity::onEnter() {
   Activity::onEnter();
-  appShortcuts = getConfiguredShortcuts(CrossPointSettings::SHORTCUT_APPS);
-  if (!OPDS_STORE.hasServers()) {
-    appShortcuts.erase(std::remove_if(appShortcuts.begin(), appShortcuts.end(),
-                                      [](const ShortcutDefinition* definition) {
-                                        return definition && definition->id == ShortcutId::OpdsBrowser;
-                                      }),
-                       appShortcuts.end());
-  }
+  appShortcuts = buildFixedAppShortcuts();
   selectedIndex = 0;
   rebuildShortcutSubtitles();
   requestUpdate();
@@ -211,7 +223,7 @@ void AppsActivity::openSelectedApp() {
   }
 
   startActivityForResult(std::move(activity), [this](const ActivityResult&) {
-    appShortcuts = getConfiguredShortcuts(CrossPointSettings::SHORTCUT_APPS);
+    appShortcuts = buildFixedAppShortcuts();
     rebuildShortcutSubtitles();
     if (!appShortcuts.empty()) {
       selectedIndex = std::min(selectedIndex, static_cast<int>(appShortcuts.size()) - 1);

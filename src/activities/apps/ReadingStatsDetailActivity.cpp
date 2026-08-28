@@ -749,6 +749,14 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
   const Rect actionsButtonRect = offsetRect(actionsButtonBaseRect, scrollDy);
   const bool actionsSelected = scrollOffset == 0 && selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX;
   const bool sessionsSelected = scrollOffset == 0 && selectedStatsItem == DETAIL_SESSIONS_FOCUS_INDEX;
+  const int cardWidth = (pageWidth - metrics.contentSidePadding * 2 - METRIC_CARD_GAP) / 2;
+  const int drawCardsTop = cardsTop + scrollDy;
+  const Rect sessionsCardRect{
+      metrics.contentSidePadding,
+      drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP,
+      cardWidth,
+      METRIC_CARD_HEIGHT,
+  };
 
   const bool baseScreenRestored = restoreBaseScreenBuffer();
   if (!baseScreenRestored) {
@@ -779,7 +787,6 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
       currentY += renderer.getLineHeight(UI_10_FONT_ID);
     }
 
-    int drawCardsTop = cardsTop + scrollDy;
     if (showCompletionBanner) {
       drawSummaryBanner(
           renderer,
@@ -788,25 +795,13 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
           tr(STR_BOOK_FINISHED), tr(STR_COMPLETED_THIS_SESSION), true);
     }
 
-    const int cardWidth = (pageWidth - metrics.contentSidePadding * 2 - METRIC_CARD_GAP) / 2;
-
     drawMetricCard(renderer, Rect{metrics.contentSidePadding, drawCardsTop, cardWidth, METRIC_CARD_HEIGHT},
                    tr(STR_LAST_SESSION), ReadingStatsAnalytics::formatDurationHm(book->lastSessionMs));
     drawMetricCard(
         renderer,
         Rect{metrics.contentSidePadding + cardWidth + METRIC_CARD_GAP, drawCardsTop, cardWidth, METRIC_CARD_HEIGHT},
         tr(STR_TOTAL_TIME), ReadingStatsAnalytics::formatDurationHm(book->totalReadingMs));
-    const Rect sessionsCardRect{
-        metrics.contentSidePadding,
-        drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP,
-        cardWidth,
-        METRIC_CARD_HEIGHT,
-    };
-    if (sessionsSelected) {
-      drawHighlightedMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
-    } else {
-      drawMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
-    }
+    drawMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
     drawMetricCard(renderer,
                    Rect{metrics.contentSidePadding + cardWidth + METRIC_CARD_GAP,
                         drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP, cardWidth, METRIC_CARD_HEIGHT},
@@ -835,6 +830,10 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
 
   if (actionsSelected) {
     drawStatsActionsButton(renderer, actionsButtonRect, true);
+  }
+
+  if (sessionsSelected) {
+    drawHighlightedMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
   }
 
   const char* confirmLabel =
