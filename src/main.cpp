@@ -40,6 +40,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/CprVcodexLogs.h"
 #include "util/ScreenshotUtil.h"
+#include "util/SilentTimeSync.h"
 #include "util/TimeUtils.h"
 #include "version.h"
 
@@ -467,6 +468,16 @@ void setup() {
     BootRecovery::enterStage(BootRecovery::BootStage::State);
     APP_STATE.loadFromFile();
   }
+
+  // X4 has no dedicated hardware RTC. When Auto Sync Day is enabled, make a
+  // short, silent attempt to refresh the date/time from a saved Wi-Fi network.
+  // If the current system day is already the same as the last valid saved day,
+  // no network is started. Failure is non-fatal and boot continues normally.
+  const bool allowSilentTimeSync =
+      !isSilentReboot && !manualSafeBoot && !skipStateLoad &&
+      wakeupReason != HalGPIO::WakeupReason::AfterUSBPower &&
+      wakeupReason != HalGPIO::WakeupReason::AfterFlash;
+  SilentTimeSync::run(allowSilentTimeSync);
 
   if (skipReadingStatsLoad) {
     logSkip("Skipping reading stats load due to recovery mode");

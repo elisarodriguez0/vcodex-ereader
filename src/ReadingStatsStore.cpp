@@ -1503,6 +1503,65 @@ bool ReadingStatsStore::adjustBookReadingTime(const std::string& path, const uin
   return saveToFile();
 }
 
+bool ReadingStatsStore::importExternalReadingStats(const std::string& path, const std::string& title,
+                                                    const std::string& author, const uint32_t dayOrdinal,
+                                                    const uint64_t readingMs, const uint32_t sessionsToAdd) {
+  if (path.empty() || dayOrdinal == 0 || (readingMs == 0 && sessionsToAdd == 0) || shouldIgnorePath(path) ||
+      !Storage.exists(path.c_str())) {
+    return false;
+  }
+
+  const std::string resolvedBookId = BookIdentity::resolveStableBookId(path);
+  const size_t index = getOrCreateBookIndex(path, title, author, "", resolvedBookId);
+  if (index >= books.size()) {
+    return false;
+  }
+
+  auto& book = books[index];
+
+  if (readingMs > 0) {
+    addReadingToDays(book.readingDays, dayOrdinal, readingMs);
+    book.totalReadingMs += readingMs;
+  }
+
+  if (sessionsToAdd > 0) {
+    const uint64_t newSessionTotal = static_cast<uint64_t>(book.sessions) + sessionsToAdd;
+    book.sessions =
+        newSessionTotal > static_cast<uint64_t>(UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(newSessionTotal);
+
+    if (readingMs > 0) {
+      const uint64_t averageSessionMs64 = std::max<uint64_t>(1, readingMs / sessionsToAdd);
+      const uint32_t averageSessionMs =
+          averageSessionMs64 > static_cast<uint64_t>(UINT32_MAX) ? UINT32_MAX
+                                                                 : static_cast<uint32_t>(averageSessionMs64);
+      book.lastSessionMs = averageSessionMs;
+
+      const uint32_t logEntries = std::min<uint32_t>(sessionsToAdd, static_cast<uint32_t>(MAX_SESSION_LOG_ENTRIES));
+      for (uint32_t i = 0; i < logEntries; ++i) {
+        appendSessionLogEntry(dayOrdinal, averageSessionMs, book);
+      }
+    }
+  }
+
+  int year = 0;
+  unsigned month = 0;
+  unsigned day = 0;
+  uint32_t dayTimestamp = 0;
+  if (TimeUtils::getDateFromDayOrdinal(dayOrdinal, year, month, day) &&
+      TimeUtils::getTimestampForLocalDate(year, month, day, &dayTimestamp) && isClockValid(dayTimestamp)) {
+    if (!isClockValid(book.firstReadAt) || dayTimestamp < book.firstReadAt) {
+      book.firstReadAt = dayTimestamp;
+    }
+    if (!isClockValid(book.lastReadAt) || dayTimestamp > book.lastReadAt) {
+      book.lastReadAt = dayTimestamp;
+    }
+  }
+
+  rebuildAggregatedReadingDays();
+  markDirty();
+  return true;
+}
+
 bool ReadingStatsStore::setBookFirstReadDate(const std::string& path, const uint32_t dayOrdinal) {
   if (dayOrdinal == 0) {
     return false;

@@ -109,6 +109,7 @@ class KOReaderSyncActivity final : public Activity {
   unsigned long uploadCompleteTime = 0;
   bool closeRequested = false;
   bool networkMemoryReleasePending = false;
+  bool kindleStatsSnapshotReady = false;
 
   void onWifiSelectionComplete(bool success);
   void performSync();

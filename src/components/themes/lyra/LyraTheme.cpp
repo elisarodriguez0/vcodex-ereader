@@ -24,6 +24,8 @@
 #include "components/icons/folder24.h"
 #include "components/icons/heart.h"
 #include "components/icons/heart24.h"
+#include "components/icons/heatmap.h"
+#include "components/icons/heatmap24.h"
 #include "components/icons/hotspot.h"
 #include "components/icons/image24.h"
 #include "components/icons/library.h"
@@ -165,6 +167,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return Trophy24Icon;
       case UIIcon::Heart:
         return Heart24Icon;
+      case UIIcon::Heatmap:
+        return Heatmap24Icon;
       default:
         return nullptr;
     }
@@ -186,6 +190,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return TransferIcon;
       case UIIcon::Library:
         return LibraryIcon;
+      case UIIcon::Heatmap:
+        return HeatmapIcon;
       case UIIcon::Text:
         return TextIcon;
       case UIIcon::Trophy:

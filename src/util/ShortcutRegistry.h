@@ -54,7 +54,7 @@ inline const std::array<ShortcutDefinition, 17>& getShortcutDefinitions() {
                          UIIcon::Book, &CrossPointSettings::readingStatsShortcut,
                          &CrossPointSettings::readingStatsShortcutOrder, &CrossPointSettings::readingStatsShortcutVisible},
       ShortcutDefinition{ShortcutId::ReadingHeatmap, StrId::STR_READING_HEATMAP, StrId::STR_READING_HEATMAP_DESC,
-                         UIIcon::Library, &CrossPointSettings::readingHeatmapShortcut,
+                         UIIcon::Heatmap, &CrossPointSettings::readingHeatmapShortcut,
                          &CrossPointSettings::readingHeatmapShortcutOrder,
                          &CrossPointSettings::readingHeatmapShortcutVisible},
       ShortcutDefinition{ShortcutId::ReadingProfile, StrId::STR_READING_PROFILE, StrId::STR_READING_PROFILE_DESC,

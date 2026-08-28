@@ -24,6 +24,7 @@
 #include "fontIds.h"
 #include "util/AchievementPopupUtils.h"
 #include "util/CompletedBookMover.h"
+#include "util/KindleStatsBridge.h"
 #include "util/NetworkMemory.h"
 #include "util/TimeUtils.h"
 
@@ -121,6 +122,30 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
 
   logSyncMemSnapshot("before_performSync");
   prepareNetworkMemory("after_trim_before_performSync");
+
+  const bool directPull =
+      syncIntent == KOReaderSyncIntentState::PULL_REMOTE || syncIntent == KOReaderSyncIntentState::AUTO_PULL;
+  const bool comparePull = syncIntent == KOReaderSyncIntentState::COMPARE;
+  kindleStatsSnapshotReady = (directPull || comparePull) && KindleStatsBridge::downloadSnapshot();
+
+  // A direct Pull means "pull everything from the remote side". Import Kindle
+  // reading stats independently from whether KOReader has newer progress,
+  // identical progress or no progress entry at all.
+  //
+  // ReadingStatsStore is deliberately released during network work, so reload
+  // it, import the staged JSON, then release it again before KOReader's own
+  // network request. This also guarantees the import happens before an
+  // AUTO_PULL can navigate away from this activity.
+  if (directPull && kindleStatsSnapshotReady) {
+    restoreNetworkMemory("before_kindle_stats_import_restore");
+
+    if (!KindleStatsBridge::importDownloadedSnapshot()) {
+      LOG_ERR("KOSync", "Kindle stats import failed during KOReader pull");
+    }
+
+    kindleStatsSnapshotReady = false;
+    prepareNetworkMemory("after_kindle_stats_import_trim");
+  }
 
   performSync();
 
@@ -496,6 +521,7 @@ void KOReaderSyncActivity::restoreNetworkMemory(const char* stage) {
 
 void KOReaderSyncActivity::onEnter() {
   Activity::onEnter();
+  kindleStatsSnapshotReady = false;
   logSyncMemSnapshot("onEnter_begin");
   LOG_DBG("KOSync", "Standalone sync: path=%s spine=%d page=%d/%d intent=%d", epubPath.c_str(), currentSpineIndex,
           currentPage, totalPagesInSpine, static_cast<int>(syncIntent));
@@ -851,6 +877,12 @@ void KOReaderSyncActivity::loop() {
                                    remotePosition.hasParagraphIndex,
                                    remotePosition.listItemIndex,
                                    remotePosition.hasListItemIndex};
+        if (kindleStatsSnapshotReady) {
+          if (!KindleStatsBridge::importDownloadedSnapshot()) {
+            LOG_ERR("KOSync", "Remote progress applied, but Kindle stats import failed");
+          }
+          kindleStatsSnapshotReady = false;
+        }
         resumeReader(KOReaderSyncOutcomeState::APPLIED_REMOTE, &result);
       } else if (selectedOption == 1) {
         performUpload();

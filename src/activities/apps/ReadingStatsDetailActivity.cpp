@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "AppMetricCard.h"
+#include "BookReadingSessionsActivity.h"
 #include "BookStatsActionsActivity.h"
 #include "ReadingStatsStore.h"
 #include "components/UITheme.h"
@@ -34,8 +35,9 @@ constexpr int METRIC_CARD_HEIGHT = 78;
 constexpr int METRIC_CARD_GAP = 8;
 constexpr int METRIC_CARD_VALUE_Y = 14;
 constexpr int METRIC_CARD_LABEL_Y = 50;
-constexpr int DETAIL_FOCUS_ITEM_COUNT = 2;
+constexpr int DETAIL_FOCUS_ITEM_COUNT = 3;
 constexpr int DETAIL_ACTIONS_FOCUS_INDEX = 1;
+constexpr int DETAIL_SESSIONS_FOCUS_INDEX = 2;
 constexpr int ACTIONS_BUTTON_SIZE = 54;
 constexpr int SUMMARY_BANNER_HEIGHT = 46;
 constexpr int SUMMARY_BANNER_GAP = 8;
@@ -245,6 +247,39 @@ std::string formatDateRange(const uint32_t startTimestamp, const uint32_t endTim
   return (start.empty() ? "?" : start) + " - " + (end.empty() ? "?" : end);
 }
 
+uint64_t getBookReadingMsForDay(const ReadingBookStats& book, const uint32_t dayOrdinal) {
+  if (dayOrdinal == 0) {
+    return 0;
+  }
+
+  const auto it =
+      std::lower_bound(book.readingDays.begin(), book.readingDays.end(), dayOrdinal,
+                       [](const ReadingDayStats& day, const uint32_t ordinal) { return day.dayOrdinal < ordinal; });
+
+  return it != book.readingDays.end() && it->dayOrdinal == dayOrdinal ? it->readingMs : 0;
+}
+
+std::string formatLastReadDateWithTime(const ReadingBookStats& book) {
+  const std::string date = formatDate(book.lastReadAt);
+  if (!TimeUtils::isClockValid(book.lastReadAt)) {
+    return date;
+  }
+
+  const uint32_t dayOrdinal = TimeUtils::getLocalDayOrdinal(book.lastReadAt);
+  const uint64_t readingMs = getBookReadingMsForDay(book, dayOrdinal);
+  if (readingMs == 0) {
+    return date;
+  }
+
+  return date + " · " + ReadingStatsAnalytics::formatDurationHm(readingMs);
+}
+
+std::string formatReadingPeriod(const ReadingBookStats& book) {
+  const std::string start = formatDate(book.firstReadAt);
+  const std::string end = TimeUtils::isClockValid(book.completedAt) ? formatDate(book.completedAt) : std::string("En curso");
+  return (start.empty() ? "?" : start) + " - " + (end.empty() ? "?" : end);
+}
+
 uint32_t getCompletionDateForDisplay(const ReadingBookStats& book) { return book.completedAt; }
 
 uint64_t roundUpEstimateMs(const uint64_t valueMs) {
@@ -306,6 +341,33 @@ void drawMetricCard(GfxRenderer& renderer, const Rect& rect, const char* label, 
   options.shrinkValue = false;
   options.labelMode = AppMetricCard::LabelMode::Truncate;
   AppMetricCard::draw(renderer, rect, label, value, options);
+}
+
+void drawHighlightedMetricCard(GfxRenderer& renderer, const Rect& rect, const char* label, const std::string& value) {
+  AppMetricCard::Options options;
+  options.valueLargeY = METRIC_CARD_VALUE_Y;
+  options.labelY = METRIC_CARD_LABEL_Y;
+  options.shrinkValue = false;
+  options.labelMode = AppMetricCard::LabelMode::Truncate;
+
+  renderer.fillRectDither(rect.x, rect.y, rect.width, rect.height, Color::MediumGray);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+
+  const int textWidth = rect.width - options.contentInset;
+  const int valueFontId =
+      options.shrinkValue &&
+              renderer.getTextWidth(UI_12_FONT_ID, value.c_str(), EpdFontFamily::BOLD) > textWidth
+          ? UI_10_FONT_ID
+          : UI_12_FONT_ID;
+  const std::string truncatedValue =
+      renderer.truncatedText(valueFontId, value.c_str(), textWidth, EpdFontFamily::BOLD);
+  renderer.drawText(valueFontId, rect.x + options.paddingX,
+                    rect.y + (valueFontId == UI_12_FONT_ID ? options.valueLargeY : options.valueSmallY),
+                    truncatedValue.c_str(), true, EpdFontFamily::BOLD);
+
+  const std::string truncatedLabel =
+      renderer.truncatedText(UI_10_FONT_ID, label, textWidth, EpdFontFamily::REGULAR);
+  renderer.drawText(UI_10_FONT_ID, rect.x + options.paddingX, rect.y + options.labelY, truncatedLabel.c_str());
 }
 
 void drawStatsActionsButton(GfxRenderer& renderer, const Rect& rect, const bool selected) {
@@ -485,6 +547,21 @@ void ReadingStatsDetailActivity::openStatsActions() {
       });
 }
 
+void ReadingStatsDetailActivity::openSessions() {
+  const auto* book = findBook(bookPath);
+  if (book == nullptr) {
+    requestUpdate();
+    return;
+  }
+
+  startActivityForResult(
+      std::make_unique<BookReadingSessionsActivity>(renderer, mappedInput, book->path),
+      [this](const ActivityResult&) {
+        guardChildReturn();
+        requestUpdate();
+      });
+}
+
 void ReadingStatsDetailActivity::guardChildReturn() {
   invalidateBaseScreenBuffer();
   waitForBackRelease = true;
@@ -526,32 +603,48 @@ void ReadingStatsDetailActivity::loop() {
   };
 
   buttonNavigator.onNextPress([&]() {
-    if (maxScrollOffset > 0) {
-      if (scrollOffset == 0 && selectedStatsItem == 0) {
+    if (scrollOffset == 0) {
+      if (selectedStatsItem == 0) {
         selectedStatsItem = DETAIL_ACTIONS_FOCUS_INDEX;
         requestUpdate();
         return;
       }
-      if (scrollOffset < maxScrollOffset && scrollBy(DETAIL_SCROLL_STEP)) {
+
+      if (selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX) {
+        selectedStatsItem = DETAIL_SESSIONS_FOCUS_INDEX;
+        requestUpdate();
         return;
       }
+    }
+
+    if (maxScrollOffset > 0 && scrollOffset < maxScrollOffset && scrollBy(DETAIL_SCROLL_STEP)) {
       return;
     }
 
-    selectedStatsItem = ButtonNavigator::nextIndex(selectedStatsItem, DETAIL_FOCUS_ITEM_COUNT);
+    selectedStatsItem = 0;
+    scrollOffset = 0;
+    invalidateBaseScreenBuffer();
     requestUpdate();
   });
+
   buttonNavigator.onPreviousPress([&]() {
-    if (maxScrollOffset > 0) {
-      if (scrollOffset > 0 && scrollBy(-DETAIL_SCROLL_STEP)) {
-        return;
-      }
-      selectedStatsItem = ButtonNavigator::previousIndex(selectedStatsItem, DETAIL_FOCUS_ITEM_COUNT);
+    if (scrollOffset > 0 && scrollBy(-DETAIL_SCROLL_STEP)) {
+      return;
+    }
+
+    if (selectedStatsItem == DETAIL_SESSIONS_FOCUS_INDEX) {
+      selectedStatsItem = DETAIL_ACTIONS_FOCUS_INDEX;
       requestUpdate();
       return;
     }
 
-    selectedStatsItem = ButtonNavigator::previousIndex(selectedStatsItem, DETAIL_FOCUS_ITEM_COUNT);
+    if (selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX) {
+      selectedStatsItem = 0;
+      requestUpdate();
+      return;
+    }
+
+    selectedStatsItem = DETAIL_SESSIONS_FOCUS_INDEX;
     requestUpdate();
   });
 
@@ -568,8 +661,15 @@ void ReadingStatsDetailActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
+      selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX) {
     openStatsActions();
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
+      selectedStatsItem == DETAIL_SESSIONS_FOCUS_INDEX) {
+    openSessions();
     return;
   }
 
@@ -648,6 +748,7 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
   const Rect coverRect = offsetRect(coverBaseRect, scrollDy);
   const Rect actionsButtonRect = offsetRect(actionsButtonBaseRect, scrollDy);
   const bool actionsSelected = scrollOffset == 0 && selectedStatsItem == DETAIL_ACTIONS_FOCUS_INDEX;
+  const bool sessionsSelected = scrollOffset == 0 && selectedStatsItem == DETAIL_SESSIONS_FOCUS_INDEX;
 
   const bool baseScreenRestored = restoreBaseScreenBuffer();
   if (!baseScreenRestored) {
@@ -695,10 +796,17 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
         renderer,
         Rect{metrics.contentSidePadding + cardWidth + METRIC_CARD_GAP, drawCardsTop, cardWidth, METRIC_CARD_HEIGHT},
         tr(STR_TOTAL_TIME), ReadingStatsAnalytics::formatDurationHm(book->totalReadingMs));
-    drawMetricCard(renderer,
-                   Rect{metrics.contentSidePadding, drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP, cardWidth,
-                        METRIC_CARD_HEIGHT},
-                   tr(STR_SESSIONS), std::to_string(book->sessions));
+    const Rect sessionsCardRect{
+        metrics.contentSidePadding,
+        drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP,
+        cardWidth,
+        METRIC_CARD_HEIGHT,
+    };
+    if (sessionsSelected) {
+      drawHighlightedMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
+    } else {
+      drawMetricCard(renderer, sessionsCardRect, tr(STR_SESSIONS), std::to_string(book->sessions));
+    }
     drawMetricCard(renderer,
                    Rect{metrics.contentSidePadding + cardWidth + METRIC_CARD_GAP,
                         drawCardsTop + METRIC_CARD_HEIGHT + METRIC_CARD_GAP, cardWidth, METRIC_CARD_HEIGHT},
@@ -706,11 +814,11 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
     drawMetricCard(renderer,
                    Rect{metrics.contentSidePadding, drawCardsTop + (METRIC_CARD_HEIGHT + METRIC_CARD_GAP) * 2,
                         pageWidth - metrics.contentSidePadding * 2, METRIC_CARD_HEIGHT},
-                   tr(STR_LAST_READ_DATE), formatDate(book->lastReadAt));
+                   tr(STR_LAST_READ_DATE), formatLastReadDateWithTime(*book));
     drawMetricCard(renderer,
                    Rect{metrics.contentSidePadding, drawCardsTop + (METRIC_CARD_HEIGHT + METRIC_CARD_GAP) * 3,
                         pageWidth - metrics.contentSidePadding * 2, METRIC_CARD_HEIGHT},
-                   tr(STR_START_END_DATE), formatDateRange(book->firstReadAt, getCompletionDateForDisplay(*book)));
+                   tr(STR_START_END_DATE), formatReadingPeriod(*book));
     drawMetricCard(renderer,
                    Rect{metrics.contentSidePadding, drawCardsTop + (METRIC_CARD_HEIGHT + METRIC_CARD_GAP) * 4,
                         pageWidth - metrics.contentSidePadding * 2, METRIC_CARD_HEIGHT},
@@ -729,7 +837,9 @@ void ReadingStatsDetailActivity::render(RenderLock&&) {
     drawStatsActionsButton(renderer, actionsButtonRect, true);
   }
 
-  const char* confirmLabel = actionsSelected ? tr(STR_SELECT) : (Storage.exists(bookPath.c_str()) ? tr(STR_OPEN) : "");
+  const char* confirmLabel =
+      actionsSelected ? tr(STR_SELECT)
+                      : (sessionsSelected ? tr(STR_OPEN) : (Storage.exists(bookPath.c_str()) ? tr(STR_OPEN) : ""));
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

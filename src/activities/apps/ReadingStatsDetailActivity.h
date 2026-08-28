@@ -28,6 +28,7 @@ class ReadingStatsDetailActivity final : public Activity {
   int maxScrollOffset = 0;
 
   void openStatsActions();
+  void openSessions();
   void guardChildReturn();
   bool storeBaseScreenBuffer();
   bool restoreBaseScreenBuffer();

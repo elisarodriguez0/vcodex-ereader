@@ -81,6 +81,7 @@ enum UIIcon {
   Apps,
   Transfer,
   Library,
+  Heatmap,
   Trophy,
   Wifi,
   Hotspot,

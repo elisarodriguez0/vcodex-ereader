@@ -156,6 +156,8 @@ class ReadingStatsStore {
                       uint8_t chapterProgressPercent = 0);
   void endSession();
   bool adjustBookReadingTime(const std::string& path, uint32_t dayOrdinal, int32_t deltaMs);
+  bool importExternalReadingStats(const std::string& path, const std::string& title, const std::string& author,
+                                  uint32_t dayOrdinal, uint64_t readingMs, uint32_t sessions);
   bool setBookFirstReadDate(const std::string& path, uint32_t dayOrdinal);
   bool updateBookMetadata(const std::string& path, const std::string& title, const std::string& author,
                           const std::string& coverBmpPath);
