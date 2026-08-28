@@ -17,6 +17,8 @@
 namespace {
 constexpr uint32_t VALID_CLOCK_THRESHOLD = 1704067200UL;  // 2024-01-01 UTC
 bool syncedThisBoot = false;
+bool ntpSyncInProgress = false;
+bool ntpInitialClockValid = false;
 uint8_t configuredTimeZonePreset = UINT8_MAX;
 int lastBridgedRtcUtcHour = -1;
 
@@ -97,28 +99,48 @@ void TimeUtils::stopNtp() {
   if (esp_sntp_enabled()) {
     esp_sntp_stop();
   }
+  ntpSyncInProgress = false;
 }
 
-bool TimeUtils::syncTimeWithNtp(const uint32_t timeoutMs) {
+void TimeUtils::startNtpSync() {
   configureTimezone();
   stopNtp();
 
-  const bool initialClockValid = isClockValid(static_cast<uint32_t>(time(nullptr)));
+  ntpInitialClockValid = isClockValid(static_cast<uint32_t>(time(nullptr)));
+
   esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
   esp_sntp_setservername(0, "pool.ntp.org");
   esp_sntp_setservername(1, "time.nist.gov");
   esp_sntp_init();
+  ntpSyncInProgress = true;
+}
+
+bool TimeUtils::pollNtpSync() {
+  if (!ntpSyncInProgress) {
+    return false;
+  }
+
+  const time_t currentTime = time(nullptr);
+  const bool currentClockValid = isClockValid(static_cast<uint32_t>(currentTime));
+  const bool syncCompleted = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
+  const bool clockJumpedToValid = !ntpInitialClockValid && currentClockValid;
+
+  if (!(syncCompleted || clockJumpedToValid) || !currentClockValid) {
+    return false;
+  }
+
+  syncedThisBoot = true;
+  ntpSyncInProgress = false;
+  writeRtcFromUtcEpoch(static_cast<uint32_t>(currentTime));
+  return true;
+}
+
+bool TimeUtils::syncTimeWithNtp(const uint32_t timeoutMs) {
+  startNtpSync();
 
   const uint32_t maxRetries = std::max<uint32_t>(1, timeoutMs / 100U);
   for (uint32_t retry = 0; retry < maxRetries; ++retry) {
-    const time_t currentTime = time(nullptr);
-    const bool currentClockValid = isClockValid(static_cast<uint32_t>(currentTime));
-    const bool syncCompleted = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
-    const bool clockJumpedToValid = !initialClockValid && currentClockValid;
-
-    if ((syncCompleted || clockJumpedToValid) && currentClockValid) {
-      syncedThisBoot = true;
-      writeRtcFromUtcEpoch(static_cast<uint32_t>(currentTime));
+    if (pollNtpSync()) {
       return true;
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);

@@ -15,9 +15,19 @@
 
 namespace {
 
-constexpr uint32_t SCAN_TIMEOUT_MS = 6000;
-constexpr uint32_t CONNECT_TIMEOUT_MS = 8000;
-constexpr uint32_t NTP_TIMEOUT_MS = 5000;
+constexpr uint32_t POST_BOOT_DELAY_MS = 2000;
+constexpr uint32_t USER_ACTIVITY_RETRY_DELAY_MS = 3000;
+constexpr uint32_t SCAN_TIMEOUT_MS = 4000;
+constexpr uint32_t CONNECT_TIMEOUT_MS = 6000;
+constexpr uint32_t NTP_TIMEOUT_MS = 4000;
+
+enum class State : uint8_t {
+  IDLE,
+  WAITING,
+  SCANNING,
+  CONNECTING,
+  NTP,
+};
 
 struct Candidate {
   WifiCredential credential;
@@ -29,32 +39,33 @@ struct Candidate {
   bool preferred = false;
 };
 
+State state = State::IDLE;
+uint32_t deadlineMs = 0;
+Candidate candidate;
+
+bool deadlineReached(const uint32_t now, const uint32_t deadline) {
+  return static_cast<int32_t>(now - deadline) >= 0;
+}
+
 void shutDownWifi() {
   TimeUtils::stopNtp();
   WiFi.scanDelete();
   WiFi.disconnect(false);
-  delay(50);
   WiFi.mode(WIFI_OFF);
-  delay(50);
 }
 
-bool waitForScan() {
-  WiFi.scanDelete();
-  WiFi.scanNetworks(true);
+void finishAttempt() {
+  shutDownWifi();
+  candidate = Candidate{};
+  deadlineMs = 0;
+  state = State::IDLE;
+}
 
-  const uint32_t started = millis();
-  while (millis() - started < SCAN_TIMEOUT_MS) {
-    const int16_t result = WiFi.scanComplete();
-    if (result == WIFI_SCAN_FAILED) {
-      return false;
-    }
-    if (result >= 0) {
-      return true;
-    }
-    delay(50);
-  }
-
-  return false;
+void postponeAfterUserActivity() {
+  shutDownWifi();
+  candidate = Candidate{};
+  deadlineMs = millis() + USER_ACTIVITY_RETRY_DELAY_MS;
+  state = State::WAITING;
 }
 
 bool selectCandidate(Candidate& selected) {
@@ -117,17 +128,13 @@ bool alreadySynchronizedForCurrentDay() {
   return currentDay != 0 && currentDay == savedDay;
 }
 
-}  // namespace
-
-bool SilentTimeSync::run(const bool allowWifiAttempt) {
-  TimeUtils::configureTimezone();
-
-  if (alreadySynchronizedForCurrentDay()) {
-    LOG_DBG("TIME", "Auto Sync Day skipped: current day is already trusted");
+bool prerequisitesStillAllowAttempt() {
+  if (!SETTINGS.autoSyncDay) {
     return false;
   }
 
-  if (!allowWifiAttempt || !SETTINGS.autoSyncDay) {
+  if (alreadySynchronizedForCurrentDay()) {
+    LOG_DBG("TIME", "Auto Sync Day skipped: current day is already trusted");
     return false;
   }
 
@@ -136,21 +143,30 @@ bool SilentTimeSync::run(const bool allowWifiAttempt) {
     return false;
   }
 
-  LOG_DBG("TIME", "Auto Sync Day: starting silent saved-network sync");
+  return true;
+}
 
+void beginScan() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.disconnect(false);
-  delay(50);
+  WiFi.scanDelete();
 
-  Candidate candidate;
-  if (!waitForScan() || !selectCandidate(candidate)) {
-    LOG_DBG("TIME", "Auto Sync Day: no saved network in range");
-    shutDownWifi();
-    return false;
+  const int16_t startResult = WiFi.scanNetworks(true);
+  if (startResult == WIFI_SCAN_FAILED) {
+    LOG_DBG("TIME", "Auto Sync Day: could not start Wi-Fi scan");
+    finishAttempt();
+    return;
   }
 
+  candidate = Candidate{};
+  deadlineMs = millis() + SCAN_TIMEOUT_MS;
+  state = State::SCANNING;
+  LOG_DBG("TIME", "Auto Sync Day: background Wi-Fi scan started");
+}
+
+void beginConnection() {
   const char* password =
       candidate.credential.password.empty()
           ? nullptr
@@ -165,30 +181,148 @@ bool SilentTimeSync::run(const bool allowWifiAttempt) {
     WiFi.begin(candidate.credential.ssid.c_str());
   }
 
-  const uint32_t connectStarted = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - connectStarted < CONNECT_TIMEOUT_MS) {
-    delay(50);
+  deadlineMs = millis() + CONNECT_TIMEOUT_MS;
+  state = State::CONNECTING;
+  LOG_DBG("TIME", "Auto Sync Day: connecting to saved network");
+}
+
+void beginNtp() {
+  TimeUtils::startNtpSync();
+  deadlineMs = millis() + NTP_TIMEOUT_MS;
+  state = State::NTP;
+  LOG_DBG("TIME", "Auto Sync Day: background NTP started");
+}
+
+}  // namespace
+
+void SilentTimeSync::schedule(const bool allowWifiAttempt) {
+  state = State::IDLE;
+  candidate = Candidate{};
+  deadlineMs = 0;
+
+  if (!allowWifiAttempt || !SETTINGS.autoSyncDay) {
+    return;
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    LOG_DBG("TIME", "Auto Sync Day: Wi-Fi connection timed out");
-    shutDownWifi();
+  // No SD/Wi-Fi work here. setup() can finish and render Home/Reader first.
+  deadlineMs = millis() + POST_BOOT_DELAY_MS;
+  state = State::WAITING;
+  LOG_DBG("TIME", "Auto Sync Day scheduled after boot");
+}
+
+bool SilentTimeSync::tick() {
+  if (state == State::IDLE) {
     return false;
   }
 
-  const bool synchronized = TimeUtils::syncTimeWithNtp(NTP_TIMEOUT_MS);
-  const uint32_t syncedTimestamp = TimeUtils::getCurrentValidTimestamp();
+  const uint32_t now = millis();
 
-  if (synchronized && TimeUtils::isClockValid(syncedTimestamp)) {
-    APP_STATE.registerValidTimeSync(syncedTimestamp);
-    APP_STATE.saveToFile();
-    WIFI_STORE.setLastConnectedSsid(candidate.credential.ssid);
-    LOG_DBG("TIME", "Auto Sync Day: synchronization complete");
-  } else {
-    LOG_DBG("TIME", "Auto Sync Day: NTP timed out");
+  switch (state) {
+    case State::WAITING:
+      if (!deadlineReached(now, deadlineMs)) {
+        return false;
+      }
+
+      TimeUtils::configureTimezone();
+
+      if (!prerequisitesStillAllowAttempt()) {
+        state = State::IDLE;
+        return false;
+      }
+
+      // Never steal Wi-Fi from a foreground activity.
+      if (WiFi.getMode() != WIFI_MODE_NULL) {
+        deadlineMs = now + USER_ACTIVITY_RETRY_DELAY_MS;
+        return false;
+      }
+
+      beginScan();
+      return false;
+
+    case State::SCANNING: {
+      const int16_t result = WiFi.scanComplete();
+
+      if (result == WIFI_SCAN_FAILED) {
+        LOG_DBG("TIME", "Auto Sync Day: Wi-Fi scan failed");
+        finishAttempt();
+        return false;
+      }
+
+      if (result >= 0) {
+        if (!selectCandidate(candidate)) {
+          LOG_DBG("TIME", "Auto Sync Day: no saved network in range");
+          finishAttempt();
+          return false;
+        }
+
+        beginConnection();
+        return false;
+      }
+
+      if (deadlineReached(now, deadlineMs)) {
+        LOG_DBG("TIME", "Auto Sync Day: Wi-Fi scan timed out");
+        finishAttempt();
+      }
+      return false;
+    }
+
+    case State::CONNECTING:
+      if (WiFi.status() == WL_CONNECTED) {
+        beginNtp();
+        return false;
+      }
+
+      if (deadlineReached(now, deadlineMs)) {
+        LOG_DBG("TIME", "Auto Sync Day: Wi-Fi connection timed out");
+        finishAttempt();
+      }
+      return false;
+
+    case State::NTP:
+      if (TimeUtils::pollNtpSync()) {
+        const uint32_t syncedTimestamp =
+            TimeUtils::getCurrentValidTimestamp();
+
+        if (TimeUtils::isClockValid(syncedTimestamp)) {
+          APP_STATE.registerValidTimeSync(syncedTimestamp);
+          APP_STATE.saveToFile();
+          WIFI_STORE.setLastConnectedSsid(candidate.credential.ssid);
+          LOG_DBG("TIME", "Auto Sync Day: background synchronization complete");
+          finishAttempt();
+          return true;
+        }
+
+        LOG_DBG("TIME", "Auto Sync Day: NTP completed without a valid clock");
+        finishAttempt();
+        return false;
+      }
+
+      if (deadlineReached(now, deadlineMs)) {
+        LOG_DBG("TIME", "Auto Sync Day: NTP timed out");
+        finishAttempt();
+      }
+      return false;
+
+    case State::IDLE:
+    default:
+      return false;
+  }
+}
+
+void SilentTimeSync::notifyUserActivity() {
+  if (state == State::IDLE) {
+    return;
   }
 
-  shutDownWifi();
-  return synchronized;
+  if (state == State::WAITING) {
+    deadlineMs = millis() + USER_ACTIVITY_RETRY_DELAY_MS;
+    return;
+  }
+
+  LOG_DBG("TIME", "Auto Sync Day: foreground activity detected, postponing");
+  postponeAfterUserActivity();
+}
+
+bool SilentTimeSync::isPendingOrRunning() {
+  return state != State::IDLE;
 }

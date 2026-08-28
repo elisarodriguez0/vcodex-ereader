@@ -469,15 +469,14 @@ void setup() {
     APP_STATE.loadFromFile();
   }
 
-  // X4 has no dedicated hardware RTC. When Auto Sync Day is enabled, make a
-  // short, silent attempt to refresh the date/time from a saved Wi-Fi network.
-  // If the current system day is already the same as the last valid saved day,
-  // no network is started. Failure is non-fatal and boot continues normally.
+  // Decide now whether this boot is eligible for Auto Sync Day, but do not
+  // perform any Wi-Fi/NTP work during setup. The actual sync is scheduled only
+  // after boot routing has completed so the user reaches Home/Reader first.
   const bool allowSilentTimeSync =
       !isSilentReboot && !manualSafeBoot && !skipStateLoad &&
+      !recoveryFirmwareMode && !rebootedFromPanic &&
       wakeupReason != HalGPIO::WakeupReason::AfterUSBPower &&
       wakeupReason != HalGPIO::WakeupReason::AfterFlash;
-  SilentTimeSync::run(allowSilentTimeSync);
 
   if (skipReadingStatsLoad) {
     logSkip("Skipping reading stats load due to recovery mode");
@@ -565,6 +564,10 @@ void setup() {
 
   BootRecovery::markBootCompleted();
 
+  // Home/Reader has now been selected and normal initialization is complete.
+  // Only schedule the background operation here; schedule() performs no I/O.
+  SilentTimeSync::schedule(allowSilentTimeSync);
+
   if (isSilentReboot) {
     activityManager.requestUpdateAndWait();
     gpio.update();
@@ -617,10 +620,16 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+  const bool foregroundActivity =
+      gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity();
+
+  if (foregroundActivity || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+  }
+
+  if (foregroundActivity) {
+    SilentTimeSync::notifyUserActivity();
   }
 
   static bool screenshotButtonsReleased = true;
@@ -674,6 +683,14 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   TimeUtils::tickSystemClockFromRtc();
+
+  // Advance Auto Sync Day only after foreground activity has had its loop turn.
+  // The state machine never blocks; a successful sync merely requests a UI
+  // refresh so header dates/times can reflect the corrected clock.
+  if (SilentTimeSync::tick()) {
+    activityManager.requestUpdate();
+  }
+
   const unsigned long activityDuration = millis() - activityStartTime;
 
   const unsigned long loopDuration = millis() - loopStartTime;

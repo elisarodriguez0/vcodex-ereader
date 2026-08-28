@@ -7,6 +7,13 @@ namespace TimeUtils {
 
 void configureTimezone();
 void stopNtp();
+
+// Non-blocking SNTP helpers. startNtpSync() starts the client and returns
+// immediately; pollNtpSync() returns true once a valid synchronized clock is
+// available. Call stopNtp() when the operation is finished or cancelled.
+void startNtpSync();
+bool pollNtpSync();
+
 bool syncTimeWithNtp(uint32_t timeoutMs = 5000);
 bool isClockValid();
 bool isClockValid(uint32_t epochSeconds);
