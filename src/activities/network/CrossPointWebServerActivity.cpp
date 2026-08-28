@@ -36,15 +36,14 @@ constexpr int QR_CODE_WIDTH = 198;
 constexpr int QR_CODE_HEIGHT = 198;
 
 // DNS server for captive portal (redirects all DNS queries to our IP)
-DNSServer* dnsServer = nullptr;
+std::unique_ptr<DNSServer> dnsServer;
 constexpr uint16_t DNS_PORT = 53;
 
 void stopDnsServer() {
   if (!dnsServer) return;
 
   dnsServer->stop();
-  delete dnsServer;
-  dnsServer = nullptr;
+  dnsServer.reset();
 }
 
 void restartMdns(const char* hostname, const char* tag) {
@@ -266,7 +265,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
   stopDnsServer();
-  dnsServer = new (std::nothrow) DNSServer();
+  dnsServer = makeUniqueNoThrow<DNSServer>();
   if (dnsServer) {
     dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer->start(DNS_PORT, "*", apIP);

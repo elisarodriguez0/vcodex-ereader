@@ -33,7 +33,7 @@ namespace {
 constexpr const char* LOG_TAG = "ESYNC";
 constexpr const char* SERVER_NAME = "Ereader Sync";
 constexpr const char* BOOKS_DIR = "/Books";
-constexpr const char* SLEEP_DIR = "/.sleep";
+constexpr const char* SLEEP_DIR = "/sleep";
 constexpr const char* CROSSPOINT_DIR = "/.crosspoint";
 constexpr const char* VERSION_FILE = "/.crosspoint/ereader_sync.json";
 constexpr const char* WALLPAPER_TEMP_JPG = "/.crosspoint/ereader_wallpaper.jpg.part";
