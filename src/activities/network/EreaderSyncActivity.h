@@ -55,6 +55,9 @@ class EreaderSyncActivity final : public Activity {
   std::vector<VersionEntry> versions;
   Counters books;
   Counters wallpapers;
+  std::vector<std::string> booksToIndex;
+  int indexedBooks = 0;
+  int indexFailed = 0;
   bool daySynced = false;
   bool wifiConnectedOnEnter = false;
   bool connectedInActivity = false;
@@ -77,6 +80,8 @@ class EreaderSyncActivity final : public Activity {
   void setVersion(char kind, const std::string& name, const std::string& etag);
 
   bool syncBook(const OpdsServer& server, const RemoteItem& item);
+  void queueBookForIndexingIfNeeded(const std::string& path);
+  void indexQueuedBooks();
   bool syncWallpaper(const OpdsServer& server, const RemoteItem& item);
   bool downloadFile(const OpdsServer& server, const RemoteItem& item, const std::string& destination);
 

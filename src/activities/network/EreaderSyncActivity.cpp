@@ -8,6 +8,7 @@
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <Epub.h>
 
 #include <algorithm>
 #include <cctype>
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
@@ -59,6 +61,9 @@ void EreaderSyncActivity::onEnter() {
   books = {};
   wallpapers = {};
   versions.clear();
+  booksToIndex.clear();
+  indexedBooks = 0;
+  indexFailed = 0;
   statusMessage.clear();
   errorMessage.clear();
   daySynced = false;
@@ -454,6 +459,7 @@ bool EreaderSyncActivity::syncBook(const OpdsServer& server, const RemoteItem& i
 
   if (!item.etag.empty() && storedVersion && *storedVersion == item.etag && Storage.exists(finalPath.c_str())) {
     books.unchanged++;
+    queueBookForIndexingIfNeeded(finalPath);
     return true;
   }
 
@@ -471,9 +477,48 @@ bool EreaderSyncActivity::syncBook(const OpdsServer& server, const RemoteItem& i
   }
 
   clearBookCache(finalPath);
+  queueBookForIndexingIfNeeded(finalPath);
   existed ? books.updated++ : books.added++;
   setVersion('B', item.name, item.etag);
   return true;
+}
+
+void EreaderSyncActivity::queueBookForIndexingIfNeeded(const std::string& path) {
+  Epub epub(path, CROSSPOINT_DIR);
+  const std::string bookBinPath = epub.getCachePath() + "/book.bin";
+  if (Storage.exists(bookBinPath.c_str())) return;
+
+  if (std::find(booksToIndex.begin(), booksToIndex.end(), path) == booksToIndex.end()) {
+    booksToIndex.push_back(path);
+  }
+}
+
+void EreaderSyncActivity::indexQueuedBooks() {
+  indexedBooks = 0;
+  indexFailed = 0;
+  if (booksToIndex.empty()) return;
+
+  const size_t total = booksToIndex.size();
+  for (size_t i = 0; i < total; ++i) {
+    char status[72];
+    snprintf(status, sizeof(status), "Indexing books... %u/%u", static_cast<unsigned>(i + 1),
+             static_cast<unsigned>(total));
+    setState(State::SYNCING, status);
+    requestUpdateAndWait();
+
+    const std::string& path = booksToIndex[i];
+    Epub epub(path, CROSSPOINT_DIR);
+    if (epub.load(true, SETTINGS.embeddedStyle == 0)) {
+      indexedBooks++;
+      LOG_DBG(LOG_TAG, "Indexed EPUB after sync: %s", path.c_str());
+    } else {
+      indexFailed++;
+      LOG_ERR(LOG_TAG, "Could not index EPUB after sync: %s", path.c_str());
+    }
+  }
+
+  booksToIndex.clear();
+  booksToIndex.shrink_to_fit();
 }
 
 bool EreaderSyncActivity::syncWallpaper(const OpdsServer& server, const RemoteItem& item) {
@@ -601,6 +646,17 @@ void EreaderSyncActivity::performSync() {
   const bool stateSaved = saveVersions();
   restoreNetworkMemory();
 
+  // If Sync All brought Wi-Fi up itself, release it before EPUB indexing.
+  // EPUB parsing is memory-heavy on the ESP32-C3 and does not need the network.
+  if (!wifiConnectedOnEnter && connectedInActivity) {
+    turnWifiOff();
+    connectedInActivity = false;
+  }
+
+  if (!cancelRequested && stateSaved) {
+    indexQueuedBooks();
+  }
+
   if (cancelRequested) {
     setError("Sync cancelled");
     return;
@@ -611,6 +667,10 @@ void EreaderSyncActivity::performSync() {
   }
   if (books.failed > 0 || wallpapers.failed > 0) {
     setError("Sync finished with errors");
+    return;
+  }
+  if (indexFailed > 0) {
+    setError("Files synced but some books could not be indexed");
     return;
   }
 
@@ -650,16 +710,19 @@ void EreaderSyncActivity::render(RenderLock&&) {
     char dayLine[48];
     char booksLine[96];
     char wallpapersLine[96];
+    char indexLine[64];
     snprintf(dayLine, sizeof(dayLine), "Day: %s", daySynced ? "synced" : "not synced");
     snprintf(booksLine, sizeof(booksLine), "Books: +%d  updated %d  unchanged %d  failed %d", books.added,
              books.updated, books.unchanged, books.failed);
     snprintf(wallpapersLine, sizeof(wallpapersLine), "Wallpapers: +%d  updated %d  unchanged %d  failed %d",
              wallpapers.added, wallpapers.updated, wallpapers.unchanged, wallpapers.failed);
+    snprintf(indexLine, sizeof(indexLine), "Indexed: %d  failed %d", indexedBooks, indexFailed);
 
     renderer.drawCenteredText(SMALL_FONT_ID, centerY + lineHeight * 2 + metrics.verticalSpacing * 2, dayLine, true);
     renderer.drawCenteredText(SMALL_FONT_ID, centerY + lineHeight * 3 + metrics.verticalSpacing * 2, booksLine, true);
     renderer.drawCenteredText(SMALL_FONT_ID, centerY + lineHeight * 4 + metrics.verticalSpacing * 2, wallpapersLine,
                               true);
+    renderer.drawCenteredText(SMALL_FONT_ID, centerY + lineHeight * 5 + metrics.verticalSpacing * 2, indexLine, true);
   } else {
     renderer.drawCenteredText(UI_12_FONT_ID, centerY, statusMessage.c_str(), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(SMALL_FONT_ID, centerY + lineHeight + metrics.verticalSpacing,
