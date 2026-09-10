@@ -30,6 +30,9 @@ struct BaselineRecord {
   std::string date;
   uint64_t readingSeconds = 0;
   uint32_t sessions = 0;
+  uint64_t morningSeconds = 0;
+  uint64_t afternoonSeconds = 0;
+  uint64_t nightSeconds = 0;
 };
 
 bool startsWithUtf8(const std::string& value, const char* prefix) {
@@ -314,6 +317,9 @@ bool loadBaseline(std::vector<BaselineRecord>& baseline) {
     record.date = date;
     record.readingSeconds = object["reading_seconds"].as<uint64_t>();
     record.sessions = object["sessions"].as<uint32_t>();
+    record.morningSeconds = object["morning_seconds"].as<uint64_t>();
+    record.afternoonSeconds = object["afternoon_seconds"].as<uint64_t>();
+    record.nightSeconds = object["night_seconds"].as<uint64_t>();
     baseline.push_back(std::move(record));
   }
 
@@ -342,6 +348,9 @@ bool saveBaseline(const std::vector<BaselineRecord>& baseline) {
     object["date"] = record.date;
     object["reading_seconds"] = record.readingSeconds;
     object["sessions"] = record.sessions;
+    object["morning_seconds"] = record.morningSeconds;
+    object["afternoon_seconds"] = record.afternoonSeconds;
+    object["night_seconds"] = record.nightSeconds;
   }
 
   const size_t written = serializeJson(document, file);
@@ -482,6 +491,13 @@ bool KindleStatsBridge::importDownloadedSnapshot() {
 
     const uint64_t remoteSeconds = object["reading_seconds"].as<uint64_t>();
     const uint32_t remoteSessions = object["sessions"].as<uint32_t>();
+    const bool hasMorningSeconds = !object["morning_seconds"].isNull();
+    const bool hasAfternoonSeconds = !object["afternoon_seconds"].isNull();
+    const bool hasNightSeconds = !object["night_seconds"].isNull();
+    const uint64_t rawMorningSeconds = object["morning_seconds"].as<uint64_t>();
+    const uint64_t rawAfternoonSeconds = object["afternoon_seconds"].as<uint64_t>();
+    const uint64_t rawNightSeconds = object["night_seconds"].as<uint64_t>();
+    const JsonArrayConst sessionDetails = object["session_details"].as<JsonArrayConst>();
 
     const std::string path = resolveLocalBookPath(book, title, author);
     if (path.empty()) {
@@ -492,22 +508,56 @@ bool KindleStatsBridge::importDownloadedSnapshot() {
 
     BaselineRecord* previous = findBaseline(baseline, book, date);
     if (!previous) {
-      baseline.push_back(BaselineRecord{book, date, 0, 0});
+      baseline.push_back(BaselineRecord{book, date, 0, 0, 0, 0, 0});
       previous = &baseline.back();
     }
 
-    const bool remoteReset =
-        remoteSeconds < previous->readingSeconds || remoteSessions < previous->sessions;
+    // Timing fields are optional for backward compatibility. If an older
+    // Kindle/plugin snapshot omits them, preserve the timing baseline instead
+    // of treating the omission as a reset to zero.
+    const uint64_t remoteMorningSeconds = hasMorningSeconds ? rawMorningSeconds : previous->morningSeconds;
+    const uint64_t remoteAfternoonSeconds = hasAfternoonSeconds ? rawAfternoonSeconds : previous->afternoonSeconds;
+    const uint64_t remoteNightSeconds = hasNightSeconds ? rawNightSeconds : previous->nightSeconds;
 
-    const uint64_t deltaSeconds =
-        remoteReset ? 0 : remoteSeconds - previous->readingSeconds;
-    const uint32_t deltaSessions =
-        remoteReset ? 0 : remoteSessions - previous->sessions;
+    const bool remoteReset = remoteSeconds < previous->readingSeconds || remoteSessions < previous->sessions ||
+                             (hasMorningSeconds && remoteMorningSeconds < previous->morningSeconds) ||
+                             (hasAfternoonSeconds && remoteAfternoonSeconds < previous->afternoonSeconds) ||
+                             (hasNightSeconds && remoteNightSeconds < previous->nightSeconds);
 
-    if (deltaSeconds > 0 || deltaSessions > 0) {
+    const uint64_t deltaSeconds = remoteReset ? 0 : remoteSeconds - previous->readingSeconds;
+    const uint32_t deltaSessions = remoteReset ? 0 : remoteSessions - previous->sessions;
+    const uint64_t deltaMorningSeconds =
+        (!remoteReset && hasMorningSeconds) ? remoteMorningSeconds - previous->morningSeconds : 0;
+    const uint64_t deltaAfternoonSeconds =
+        (!remoteReset && hasAfternoonSeconds) ? remoteAfternoonSeconds - previous->afternoonSeconds : 0;
+    const uint64_t deltaNightSeconds =
+        (!remoteReset && hasNightSeconds) ? remoteNightSeconds - previous->nightSeconds : 0;
+
+    uint32_t validDetailedSessions = 0;
+    if (!sessionDetails.isNull()) {
+      for (const JsonObjectConst detail : sessionDetails) {
+        const uint32_t startAt = detail["start_time"].as<uint32_t>();
+        const uint32_t endAt = detail["end_time"].as<uint32_t>();
+        const uint32_t readingSeconds = detail["reading_seconds"].as<uint32_t>();
+        if (startAt != 0 && endAt >= startAt && readingSeconds != 0) {
+          ++validDetailedSessions;
+        }
+      }
+    }
+
+    const bool hasStatsDelta = deltaSeconds > 0 || deltaSessions > 0 || deltaMorningSeconds > 0 ||
+                               deltaAfternoonSeconds > 0 || deltaNightSeconds > 0;
+
+    if (hasStatsDelta) {
       const uint64_t deltaMs = deltaSeconds * 1000ULL;
+      const uint64_t deltaMorningMs = deltaMorningSeconds * 1000ULL;
+      const uint64_t deltaAfternoonMs = deltaAfternoonSeconds * 1000ULL;
+      const uint64_t deltaNightMs = deltaNightSeconds * 1000ULL;
+      const uint32_t detailedForNewSessions = std::min(deltaSessions, validDetailedSessions);
 
-      if (!READING_STATS.importExternalReadingStats(path, title, author, dayOrdinal, deltaMs, deltaSessions)) {
+      if (!READING_STATS.importExternalReadingStats(path, title, author, dayOrdinal, deltaMs, deltaSessions,
+                                                     deltaMorningMs, deltaAfternoonMs, deltaNightMs,
+                                                     detailedForNewSessions)) {
         LOG_ERR(LOG_TAG, "Could not import Kindle stats for %s on %s", book.c_str(), date.c_str());
         continue;
       }
@@ -520,9 +570,38 @@ bool KindleStatsBridge::importDownloadedSnapshot() {
       ++unchangedRecords;
     }
 
-    if (previous->readingSeconds != remoteSeconds || previous->sessions != remoteSessions) {
+    // Detailed sessions are idempotent/upserted by their real start timestamp.
+    // Process them on every pull so an active Kindle session can grow without
+    // ever becoming a duplicate on the X4.
+    if (!sessionDetails.isNull()) {
+      for (const JsonObjectConst detail : sessionDetails) {
+        const uint32_t startAt = detail["start_time"].as<uint32_t>();
+        const uint32_t endAt = detail["end_time"].as<uint32_t>();
+        const uint32_t readingSeconds = detail["reading_seconds"].as<uint32_t>();
+        const uint32_t morningSeconds = detail["morning_seconds"].as<uint32_t>();
+        const uint32_t afternoonSeconds = detail["afternoon_seconds"].as<uint32_t>();
+        const uint32_t nightSeconds = detail["night_seconds"].as<uint32_t>();
+
+        if (startAt == 0 || endAt < startAt || readingSeconds == 0) {
+          continue;
+        }
+
+        if (READING_STATS.importExternalReadingSession(path, startAt, endAt, readingSeconds * 1000U,
+                                                       morningSeconds * 1000U, afternoonSeconds * 1000U,
+                                                       nightSeconds * 1000U)) {
+          statsChanged = true;
+        }
+      }
+    }
+
+    if (previous->readingSeconds != remoteSeconds || previous->sessions != remoteSessions ||
+        previous->morningSeconds != remoteMorningSeconds || previous->afternoonSeconds != remoteAfternoonSeconds ||
+        previous->nightSeconds != remoteNightSeconds) {
       previous->readingSeconds = remoteSeconds;
       previous->sessions = remoteSessions;
+      previous->morningSeconds = remoteMorningSeconds;
+      previous->afternoonSeconds = remoteAfternoonSeconds;
+      previous->nightSeconds = remoteNightSeconds;
       baselineChanged = true;
     }
   }

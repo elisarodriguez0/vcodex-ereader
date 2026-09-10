@@ -15,6 +15,15 @@ struct ReadingDayStats {
   uint64_t readingMs = 0;
 };
 
+// Reading time for which an actual wall-clock timestamp is known.
+// Unknown/legacy time is intentionally not represented here.
+struct ReadingPeriodDayStats {
+  uint32_t dayOrdinal = 0;
+  uint32_t morningMs = 0;    // 06:00-13:00
+  uint32_t afternoonMs = 0;  // 13:00-21:00
+  uint32_t nightMs = 0;      // 21:00-06:00
+};
+
 struct ReadingBookStats {
   std::string bookId;
   std::string path;
@@ -24,6 +33,7 @@ struct ReadingBookStats {
   std::string coverBmpPath;
   std::string chapterTitle;
   std::vector<ReadingDayStats> readingDays;
+  std::vector<ReadingPeriodDayStats> timedReadingDays;
   uint64_t totalReadingMs = 0;
   uint32_t sessions = 0;
   uint32_t lastSessionMs = 0;
@@ -52,6 +62,15 @@ struct ReadingSessionLogEntry {
   uint32_t sessionMs = 0;
   std::string bookId;
   std::string path;
+
+  // Zero means that this is legacy/untimed data. Never fabricate a clock time.
+  uint32_t startAt = 0;
+  uint32_t endAt = 0;
+
+  // Known-time distribution for this session. Legacy entries remain zero.
+  uint32_t morningMs = 0;
+  uint32_t afternoonMs = 0;
+  uint32_t nightMs = 0;
 };
 
 class ReadingStatsStore;
@@ -85,6 +104,12 @@ class ReadingStatsStore {
     uint64_t accumulatedMs = 0;
     uint8_t startProgressPercent = 0;
     bool startCompleted = false;
+
+    // Timing is best-effort only when the real device clock is valid.
+    uint32_t startTimestamp = 0;
+    uint64_t morningMs = 0;
+    uint64_t afternoonMs = 0;
+    uint64_t nightMs = 0;
   };
 
   std::vector<ReadingBookStats> books;
@@ -120,12 +145,16 @@ class ReadingStatsStore {
   void touchBook(size_t index);
   ReadingDayStats& getOrCreateReadingDay(uint32_t epochSeconds);
   ReadingDayStats& getOrCreateBookReadingDay(ReadingBookStats& book, uint32_t epochSeconds);
+  ReadingPeriodDayStats& getOrCreateBookTimedReadingDay(ReadingBookStats& book, uint32_t dayOrdinal);
   uint32_t getLatestKnownTimestamp() const;
   uint32_t getReferenceTimestamp(uint32_t preferredTimestamp, uint32_t bookTimestamp = 0) const;
   uint32_t getReferenceDayOrdinal() const;
   void updateBookReadTimestamp(ReadingBookStats& book, uint32_t preferredTimestamp);
   void recordReadingTime(ReadingBookStats& book, uint32_t epochSeconds, uint64_t readingMs);
-  void appendSessionLogEntry(uint32_t dayOrdinal, uint32_t sessionMs, const ReadingBookStats& book);
+  void recordTimedReading(ReadingBookStats& book, uint32_t endTimestamp, uint64_t readingMs);
+  void appendSessionLogEntry(uint32_t dayOrdinal, uint32_t sessionMs, const ReadingBookStats& book,
+                             uint32_t startAt = 0, uint32_t endAt = 0, uint32_t morningMs = 0,
+                             uint32_t afternoonMs = 0, uint32_t nightMs = 0);
   bool convertLegacyReadingDaysToUnassigned();
   void rebuildAggregatedReadingDays();
   bool removeIgnoredBooks();
@@ -157,7 +186,12 @@ class ReadingStatsStore {
   void endSession();
   bool adjustBookReadingTime(const std::string& path, uint32_t dayOrdinal, int32_t deltaMs);
   bool importExternalReadingStats(const std::string& path, const std::string& title, const std::string& author,
-                                  uint32_t dayOrdinal, uint64_t readingMs, uint32_t sessions);
+                                  uint32_t dayOrdinal, uint64_t readingMs, uint32_t sessions,
+                                  uint64_t morningMs = 0, uint64_t afternoonMs = 0, uint64_t nightMs = 0,
+                                  uint32_t detailedSessions = 0);
+  bool importExternalReadingSession(const std::string& path, uint32_t startAt, uint32_t endAt, uint32_t sessionMs,
+                                    uint32_t morningMs, uint32_t afternoonMs, uint32_t nightMs);
+  bool hasTimedSession(const std::string& path, uint32_t startAt) const;
   bool setBookFirstReadDate(const std::string& path, uint32_t dayOrdinal);
   bool updateBookMetadata(const std::string& path, const std::string& title, const std::string& author,
                           const std::string& coverBmpPath);

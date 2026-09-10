@@ -21,6 +21,7 @@ constexpr int SUMMARY_GAP = 10;
 constexpr int RECENT_CARD_HEIGHT = SUMMARY_CARD_HEIGHT;
 constexpr int CHART_HEADER_HEIGHT = 34;
 constexpr int CHART_HEIGHT = 180;
+constexpr int PERIOD_CHART_HEIGHT = 228;
 constexpr int CHART_TOP_GAP = 10;
 constexpr int CHART_BOTTOM_GAP = 10;
 constexpr int CHART_SECTION_GAP = 16;
@@ -30,6 +31,15 @@ struct ChartBar {
   std::string bottomLabel;
   std::string topLabel;
   uint64_t readingMs = 0;
+};
+
+struct PeriodChartBar {
+  std::string bottomLabel;
+  uint64_t morningMs = 0;
+  uint64_t afternoonMs = 0;
+  uint64_t nightMs = 0;
+
+  uint64_t totalMs() const { return morningMs + afternoonMs + nightMs; }
 };
 
 void drawMetricCard(GfxRenderer& renderer, const Rect& rect, const char* label, const std::string& value,
@@ -112,11 +122,17 @@ uint32_t getDisplayReferenceDayOrdinal() {
   return TimeUtils::getLocalDayOrdinal(displayTimestamp);
 }
 
-int resolveReferenceYear(const std::vector<ReadingDayStats>& readingDays) {
-  uint32_t referenceDayOrdinal = getDisplayReferenceDayOrdinal();
-  if (referenceDayOrdinal == 0 && !readingDays.empty()) {
-    referenceDayOrdinal = readingDays.back().dayOrdinal;
+uint32_t resolveReferenceDayOrdinal(const std::vector<ReadingDayStats>& readingDays) {
+  const uint32_t displayDayOrdinal = getDisplayReferenceDayOrdinal();
+  if (displayDayOrdinal != 0) {
+    return displayDayOrdinal;
   }
+
+  return readingDays.empty() ? 0 : readingDays.back().dayOrdinal;
+}
+
+int resolveReferenceYear(const std::vector<ReadingDayStats>& readingDays) {
+  const uint32_t referenceDayOrdinal = resolveReferenceDayOrdinal(readingDays);
 
   if (referenceDayOrdinal == 0) {
     return 0;
@@ -136,10 +152,7 @@ std::vector<ChartBar> getRecentDailyReadingBars() {
     return bars;
   }
 
-  uint32_t referenceDayOrdinal = getDisplayReferenceDayOrdinal();
-  if (referenceDayOrdinal == 0) {
-    referenceDayOrdinal = readingDays.back().dayOrdinal;
-  }
+  const uint32_t referenceDayOrdinal = resolveReferenceDayOrdinal(readingDays);
 
   for (int index = 0; index < 7; ++index) {
     const uint32_t dayOrdinal = referenceDayOrdinal >= static_cast<uint32_t>(6 - index)
@@ -188,6 +201,79 @@ std::vector<ChartBar> getAnnualReadingBars(int& year) {
   return bars;
 }
 
+std::vector<PeriodChartBar> getWeeklyPeriodReadingBars(uint32_t& weekStartDayOrdinal,
+                                                        uint32_t& weekEndDayOrdinal) {
+  std::vector<PeriodChartBar> bars(7);
+  weekStartDayOrdinal = 0;
+  weekEndDayOrdinal = 0;
+
+  const auto& readingDays = READING_STATS.getReadingDays();
+  const uint32_t referenceDayOrdinal = resolveReferenceDayOrdinal(readingDays);
+  if (referenceDayOrdinal == 0) {
+    return bars;
+  }
+
+  // ReadingStats day ordinals use the Unix civil-day epoch. 1970-01-01 was
+  // Thursday, so +3 maps Monday to index 0 for a Monday-Sunday week.
+  const uint32_t weekdayFromMonday = (referenceDayOrdinal + 3U) % 7U;
+  weekStartDayOrdinal = referenceDayOrdinal - weekdayFromMonday;
+  weekEndDayOrdinal = weekStartDayOrdinal + 6U;
+
+  for (size_t index = 0; index < bars.size(); ++index) {
+    bars[index].bottomLabel = formatDayLabel(weekStartDayOrdinal + static_cast<uint32_t>(index));
+  }
+
+  for (const auto& book : READING_STATS.getBooks()) {
+    for (const auto& timedDay : book.timedReadingDays) {
+      if (timedDay.dayOrdinal < weekStartDayOrdinal || timedDay.dayOrdinal > weekEndDayOrdinal) {
+        continue;
+      }
+
+      const size_t index = static_cast<size_t>(timedDay.dayOrdinal - weekStartDayOrdinal);
+      if (index >= bars.size()) {
+        continue;
+      }
+
+      auto& bar = bars[index];
+      bar.morningMs += timedDay.morningMs;
+      bar.afternoonMs += timedDay.afternoonMs;
+      bar.nightMs += timedDay.nightMs;
+    }
+  }
+
+  return bars;
+}
+
+std::vector<PeriodChartBar> getAnnualPeriodReadingBars(const int year) {
+  std::vector<PeriodChartBar> bars(12);
+  for (unsigned month = 1; month <= 12; ++month) {
+    bars[month - 1].bottomLabel = formatMonthLabel(month);
+  }
+
+  if (year <= 0) {
+    return bars;
+  }
+
+  for (const auto& book : READING_STATS.getBooks()) {
+    for (const auto& timedDay : book.timedReadingDays) {
+      int dayYear = 0;
+      unsigned dayMonth = 0;
+      unsigned dayNumber = 0;
+      civilFromDays(static_cast<int>(timedDay.dayOrdinal), dayYear, dayMonth, dayNumber);
+      if (dayYear != year || dayMonth == 0 || dayMonth > 12) {
+        continue;
+      }
+
+      auto& bar = bars[dayMonth - 1];
+      bar.morningMs += timedDay.morningMs;
+      bar.afternoonMs += timedDay.afternoonMs;
+      bar.nightMs += timedDay.nightMs;
+    }
+  }
+
+  return bars;
+}
+
 std::string formatAnnualReadingTitle(const int year) {
   if (year <= 0) {
     return tr(STR_ANNUAL_READING);
@@ -195,9 +281,20 @@ std::string formatAnnualReadingTitle(const int year) {
   return std::string(tr(STR_ANNUAL_READING)) + " (" + std::to_string(year) + ")";
 }
 
+std::string formatWeeklyPeriodTitle(const uint32_t weekStartDayOrdinal, const uint32_t weekEndDayOrdinal) {
+  if (weekStartDayOrdinal == 0 || weekEndDayOrdinal == 0) {
+    return "Momento de lectura";
+  }
+
+  return std::string("Momento de lectura · ") + formatDayLabel(weekStartDayOrdinal) + "-" +
+         formatDayLabel(weekEndDayOrdinal);
+}
+
 int getScrollableContentBottom(const GfxRenderer&, const ThemeMetrics&) {
-  return CHART_HEADER_HEIGHT + CHART_TOP_GAP + CHART_HEIGHT + CHART_SECTION_GAP + CHART_HEADER_HEIGHT +
-         CHART_TOP_GAP + CHART_HEIGHT;
+  return CHART_HEADER_HEIGHT + CHART_TOP_GAP + CHART_HEIGHT + CHART_SECTION_GAP +
+         CHART_HEADER_HEIGHT + CHART_TOP_GAP + CHART_HEIGHT + CHART_SECTION_GAP +
+         CHART_HEADER_HEIGHT + CHART_TOP_GAP + PERIOD_CHART_HEIGHT + CHART_SECTION_GAP +
+         CHART_HEADER_HEIGHT + CHART_TOP_GAP + PERIOD_CHART_HEIGHT;
 }
 
 int getMaxScrollOffset(const GfxRenderer& renderer, const ThemeMetrics& metrics) {
@@ -278,6 +375,137 @@ void drawReadingChart(GfxRenderer& renderer, const Rect& rect, const std::vector
     }
   }
 }
+
+void drawPeriodLegendItem(GfxRenderer& renderer, const int x, const int y, const int width, const char* label,
+                          const uint64_t readingMs, const int style) {
+  constexpr int BOX = 12;
+  if (style == 0) {
+    renderer.fillRectDither(x, y + 1, BOX, BOX, Color::LightGray);
+  } else if (style == 1) {
+    renderer.fillRectDither(x, y + 1, BOX, BOX, Color::MediumGray);
+  } else {
+    renderer.fillRect(x, y + 1, BOX, BOX, true);
+  }
+  renderer.drawRect(x, y + 1, BOX, BOX);
+
+  const int textX = x + BOX + 4;
+  const int textWidth = std::max(1, width - BOX - 4);
+  const std::string clippedLabel = renderer.truncatedText(SMALL_FONT_ID, label, textWidth, EpdFontFamily::REGULAR);
+  renderer.drawText(SMALL_FONT_ID, textX, y, clippedLabel.c_str());
+
+  const std::string duration = ReadingStatsAnalytics::formatDurationHm(readingMs);
+  const std::string clippedDuration =
+      renderer.truncatedText(SMALL_FONT_ID, duration.c_str(), textWidth, EpdFontFamily::BOLD);
+  renderer.drawText(SMALL_FONT_ID, textX, y + 17, clippedDuration.c_str(), true, EpdFontFamily::BOLD);
+}
+
+void drawPeriodReadingChart(GfxRenderer& renderer, const Rect& rect, const std::vector<PeriodChartBar>& bars) {
+  if (bars.empty()) return;
+
+  const int innerLeft = rect.x + 14;
+  const int innerRight = rect.x + rect.width - 14;
+  const int legendY = rect.y + 2;
+  const int legendWidth = (innerRight - innerLeft) / 3;
+
+  uint64_t totalMorningMs = 0;
+  uint64_t totalAfternoonMs = 0;
+  uint64_t totalNightMs = 0;
+  for (const auto& bar : bars) {
+    totalMorningMs += bar.morningMs;
+    totalAfternoonMs += bar.afternoonMs;
+    totalNightMs += bar.nightMs;
+  }
+
+  drawPeriodLegendItem(renderer, innerLeft, legendY, legendWidth - 4, "Mañana 06-13", totalMorningMs, 0);
+  drawPeriodLegendItem(renderer, innerLeft + legendWidth, legendY, legendWidth - 4, "Tarde 13-21",
+                       totalAfternoonMs, 1);
+  drawPeriodLegendItem(renderer, innerLeft + legendWidth * 2, legendY, legendWidth - 4, "Noche 21-06", totalNightMs,
+                       2);
+
+  const uint64_t totalKnownMs = totalMorningMs + totalAfternoonMs + totalNightMs;
+  const char* dominantPeriod = "Sin datos";
+  if (totalKnownMs > 0) {
+    if (totalMorningMs >= totalAfternoonMs && totalMorningMs >= totalNightMs) {
+      dominantPeriod = "Mañana";
+    } else if (totalAfternoonMs >= totalNightMs) {
+      dominantPeriod = "Tarde";
+    } else {
+      dominantPeriod = "Noche";
+    }
+  }
+
+  const std::string summary = std::string("Más habitual: ") + dominantPeriod + " · Datos horarios: " +
+                              ReadingStatsAnalytics::formatDurationHm(totalKnownMs);
+  const std::string clippedSummary =
+      renderer.truncatedText(SMALL_FONT_ID, summary.c_str(), innerRight - innerLeft, EpdFontFamily::REGULAR);
+  renderer.drawText(SMALL_FONT_ID, innerLeft, rect.y + 39, clippedSummary.c_str());
+
+  const int topLabelY = rect.y + 57;
+  const int chartTop = rect.y + 81;
+  const int bottomLabelAreaHeight = 18;
+  const int bottomGap = 10;
+  const int baselineY = rect.y + rect.height - bottomLabelAreaHeight - bottomGap - 2;
+  const int bottomLabelY = baselineY + bottomGap;
+  const int chartHeight = std::max(1, baselineY - chartTop);
+
+  const int barCount = static_cast<int>(bars.size());
+  const int barGap = 4;
+  const int barWidth = std::max(8, (innerRight - innerLeft - barGap * (barCount - 1)) / barCount);
+  const int usedWidth = barWidth * barCount + barGap * (barCount - 1);
+  const int chartLeft = rect.x + (rect.width - usedWidth) / 2;
+
+  uint64_t maxValue = 1;
+  for (const auto& bar : bars) maxValue = std::max(maxValue, bar.totalMs());
+
+  renderer.drawLine(innerLeft - 2, baselineY, innerRight + 2, baselineY, 2, true);
+
+  for (int index = 0; index < barCount; ++index) {
+    const auto& bar = bars[index];
+    const uint64_t total = bar.totalMs();
+    const int barX = chartLeft + index * (barWidth + barGap);
+
+    const std::string topLabel = formatRoundedDurationLabel(total);
+    if (!topLabel.empty()) {
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, topLabel.c_str(), EpdFontFamily::REGULAR);
+      renderer.drawText(SMALL_FONT_ID, barX + (barWidth - labelWidth) / 2, topLabelY, topLabel.c_str());
+    }
+
+    int totalHeight = static_cast<int>((total * chartHeight) / maxValue);
+    if (total > 0 && totalHeight < 6) totalHeight = 6;
+
+    if (totalHeight > 0 && total > 0) {
+      int morningHeight = static_cast<int>((bar.morningMs * totalHeight) / total);
+      int afternoonHeight = static_cast<int>((bar.afternoonMs * totalHeight) / total);
+      int nightHeight = totalHeight - morningHeight - afternoonHeight;
+
+      int y = baselineY;
+      auto drawSegment = [&](const int height, const int style) {
+        if (height <= 0) return;
+        y -= height;
+        if (style == 0) {
+          renderer.fillRectDither(barX + 1, y, std::max(0, barWidth - 2), height, Color::LightGray);
+        } else if (style == 1) {
+          renderer.fillRectDither(barX + 1, y, std::max(0, barWidth - 2), height, Color::MediumGray);
+        } else {
+          renderer.fillRect(barX + 1, y, std::max(0, barWidth - 2), height, true);
+        }
+      };
+
+      // Bottom to top: Morning, Afternoon, Night.
+      drawSegment(morningHeight, 0);
+      drawSegment(afternoonHeight, 1);
+      drawSegment(nightHeight, 2);
+      renderer.drawRect(barX, baselineY - totalHeight, barWidth, totalHeight);
+    } else {
+      renderer.drawLine(barX, baselineY - 1, barX + barWidth, baselineY - 1);
+    }
+
+    if (!bar.bottomLabel.empty()) {
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, bar.bottomLabel.c_str(), EpdFontFamily::REGULAR);
+      renderer.drawText(SMALL_FONT_ID, barX + (barWidth - labelWidth) / 2, bottomLabelY + 2, bar.bottomLabel.c_str());
+    }
+  }
+}
 }  // namespace
 
 void ReadingStatsExtendedActivity::onEnter() {
@@ -329,6 +557,10 @@ void ReadingStatsExtendedActivity::render(RenderLock&&) {
   const int dailyChartTop = dailyChartHeaderTop + CHART_HEADER_HEIGHT + CHART_TOP_GAP;
   const int annualChartHeaderTop = dailyChartTop + CHART_HEIGHT + CHART_SECTION_GAP;
   const int annualChartTop = annualChartHeaderTop + CHART_HEADER_HEIGHT + CHART_TOP_GAP;
+  const int weeklyPeriodChartHeaderTop = annualChartTop + CHART_HEIGHT + CHART_SECTION_GAP;
+  const int weeklyPeriodChartTop = weeklyPeriodChartHeaderTop + CHART_HEADER_HEIGHT + CHART_TOP_GAP;
+  const int annualPeriodChartHeaderTop = weeklyPeriodChartTop + PERIOD_CHART_HEIGHT + CHART_SECTION_GAP;
+  const int annualPeriodChartTop = annualPeriodChartHeaderTop + CHART_HEADER_HEIGHT + CHART_TOP_GAP;
 
   const std::string last7DaysValue = ReadingStatsAnalytics::formatDurationHm(READING_STATS.getRecentReadingMs(7));
   const std::string last30DaysValue = ReadingStatsAnalytics::formatDurationHm(READING_STATS.getRecentReadingMs(30));
@@ -338,6 +570,10 @@ void ReadingStatsExtendedActivity::render(RenderLock&&) {
       ReadingStatsAnalytics::formatDurationHm(getDailyReadingGoalMs());
   int annualReadingYear = 0;
   const auto annualReadingBars = getAnnualReadingBars(annualReadingYear);
+  uint32_t weekStartDayOrdinal = 0;
+  uint32_t weekEndDayOrdinal = 0;
+  const auto weeklyPeriodReadingBars = getWeeklyPeriodReadingBars(weekStartDayOrdinal, weekEndDayOrdinal);
+  const auto annualPeriodReadingBars = getAnnualPeriodReadingBars(annualReadingYear);
 
   GUI.drawSubHeader(renderer, Rect{0, dailyChartHeaderTop, pageWidth, CHART_HEADER_HEIGHT}, tr(STR_DAILY_READING),
                     nullptr);
@@ -349,6 +585,22 @@ void ReadingStatsExtendedActivity::render(RenderLock&&) {
                     nullptr);
   drawReadingChart(renderer, Rect{sidePadding, annualChartTop, pageWidth - sidePadding * 2, CHART_HEIGHT},
                    annualReadingBars, false);
+
+  const std::string weeklyPeriodTitle = formatWeeklyPeriodTitle(weekStartDayOrdinal, weekEndDayOrdinal);
+  GUI.drawSubHeader(renderer, Rect{0, weeklyPeriodChartHeaderTop, pageWidth, CHART_HEADER_HEIGHT},
+                    weeklyPeriodTitle.c_str(), nullptr);
+  drawPeriodReadingChart(
+      renderer, Rect{sidePadding, weeklyPeriodChartTop, pageWidth - sidePadding * 2, PERIOD_CHART_HEIGHT},
+      weeklyPeriodReadingBars);
+
+  const std::string annualPeriodTitle =
+      annualReadingYear > 0 ? std::string("Momento de lectura (") + std::to_string(annualReadingYear) + ")"
+                            : std::string("Momento de lectura");
+  GUI.drawSubHeader(renderer, Rect{0, annualPeriodChartHeaderTop, pageWidth, CHART_HEADER_HEIGHT},
+                    annualPeriodTitle.c_str(), nullptr);
+  drawPeriodReadingChart(
+      renderer, Rect{sidePadding, annualPeriodChartTop, pageWidth - sidePadding * 2, PERIOD_CHART_HEIGHT},
+      annualPeriodReadingBars);
 
   renderer.fillRect(0, 0, pageWidth, chartViewportTop, false);
   if (chartViewportBottom < renderer.getScreenHeight()) {

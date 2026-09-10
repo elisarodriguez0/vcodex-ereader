@@ -7,7 +7,7 @@
 #include <string>
 
 #include "AppMetricCard.h"
-#include "ReadingDayDetailActivity.h"
+#include "BookReadingSessionDayActivity.h"
 #include "ReadingStatsStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -149,7 +149,7 @@ void BookReadingSessionsActivity::openSelectedDay() {
   }
 
   startActivityForResult(
-      std::make_unique<ReadingDayDetailActivity>(renderer, mappedInput, entries[selectedIndex].dayOrdinal),
+      std::make_unique<BookReadingSessionDayActivity>(renderer, mappedInput, bookPath, entries[selectedIndex].dayOrdinal),
       [this](const ActivityResult&) {
         refreshEntries();
         requestUpdate();

@@ -1586,7 +1586,7 @@ bool JsonSettingsIO::loadFavorites(FavoritesStore& store, const char* json) {
 
 bool JsonSettingsIO::saveReadingStats(const ReadingStatsStore& store, const char* path) {
   JsonDocument doc;
-  doc["formatVersion"] = 6;
+  doc["formatVersion"] = 7;
 
   JsonArray days = doc["readingDays"].to<JsonArray>();
   for (const auto& day : store.getReadingDays()) {
@@ -1612,6 +1612,21 @@ bool JsonSettingsIO::saveReadingStats(const ReadingStatsStore& store, const char
     }
     if (!session.path.empty()) {
       sessionObj["path"] = session.path;
+    }
+    if (session.startAt != 0) {
+      sessionObj["startAt"] = session.startAt;
+    }
+    if (session.endAt != 0) {
+      sessionObj["endAt"] = session.endAt;
+    }
+    if (session.morningMs != 0) {
+      sessionObj["morningMs"] = session.morningMs;
+    }
+    if (session.afternoonMs != 0) {
+      sessionObj["afternoonMs"] = session.afternoonMs;
+    }
+    if (session.nightMs != 0) {
+      sessionObj["nightMs"] = session.nightMs;
     }
   }
 
@@ -1644,6 +1659,15 @@ bool JsonSettingsIO::saveReadingStats(const ReadingStatsStore& store, const char
       dayObj["dayOrdinal"] = day.dayOrdinal;
       dayObj["readingMs"] = day.readingMs;
     }
+
+    JsonArray timedDays = obj["timedReadingDays"].to<JsonArray>();
+    for (const auto& day : book.timedReadingDays) {
+      JsonObject dayObj = timedDays.add<JsonObject>();
+      dayObj["dayOrdinal"] = day.dayOrdinal;
+      dayObj["morningMs"] = day.morningMs;
+      dayObj["afternoonMs"] = day.afternoonMs;
+      dayObj["nightMs"] = day.nightMs;
+    }
   }
 
   return saveJsonDocumentToFile("RST", path, doc);
@@ -1661,7 +1685,7 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
     return false;
   }
   const uint32_t formatVersion = formatValue | static_cast<uint32_t>(1);
-  if (formatVersion == 0 || formatVersion > 6) {
+  if (formatVersion == 0 || formatVersion > 7) {
     CPR_VCODEX_LOG_EVENT("RST",
                          std::string("Unsupported reading stats formatVersion: ") + std::to_string(formatVersion));
     return false;
@@ -1701,6 +1725,10 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
       CPR_VCODEX_LOG_EVENT("RST", "Reading stats book readingDays is not an array");
       return false;
     }
+    if (!obj["timedReadingDays"].isNull() && !obj["timedReadingDays"].is<JsonArrayConst>()) {
+      CPR_VCODEX_LOG_EVENT("RST", "Reading stats book timedReadingDays is not an array");
+      return false;
+    }
   }
   for (JsonVariantConst value : doc["sessionLog"].as<JsonArrayConst>()) {
     if (!value.is<JsonObjectConst>()) {
@@ -1713,7 +1741,7 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
   store.legacyReadingDays.clear();
   store.readingDays.clear();
   store.sessionLog.clear();
-  store.dirty = missingCurrentArray;
+  store.dirty = missingCurrentArray || formatVersion < 7;
 
   auto appendReadingDays = [](std::vector<ReadingDayStats>& destination, JsonArrayConst source) {
     for (JsonVariantConst value : source) {
@@ -1750,7 +1778,24 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
       session.sessionMs = sessionObj["sessionMs"] | static_cast<uint32_t>(0);
       session.bookId = sessionObj["bookId"] | std::string("");
       session.path = BookIdentity::normalizePath(sessionObj["path"] | std::string(""));
-      if (session.dayOrdinal != 0 && session.sessionMs != 0) {
+      if (formatVersion >= 7) {
+        session.startAt = sessionObj["startAt"] | static_cast<uint32_t>(0);
+        session.endAt = sessionObj["endAt"] | static_cast<uint32_t>(0);
+        session.morningMs = sessionObj["morningMs"] | static_cast<uint32_t>(0);
+        session.afternoonMs = sessionObj["afternoonMs"] | static_cast<uint32_t>(0);
+        session.nightMs = sessionObj["nightMs"] | static_cast<uint32_t>(0);
+        if (session.startAt == 0 || session.endAt < session.startAt) {
+          session.startAt = 0;
+          session.endAt = 0;
+          session.morningMs = 0;
+          session.afternoonMs = 0;
+          session.nightMs = 0;
+        }
+      }
+      const bool hasIdentity = !session.bookId.empty() || !session.path.empty();
+      const bool validSession = session.dayOrdinal != 0 &&
+                                (session.sessionMs != 0 || (formatVersion >= 7 && hasIdentity));
+      if (validSession) {
         store.sessionLog.push_back(session);
       }
     }
@@ -1787,6 +1832,19 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
     book.completed = obj["completed"] | false;
     if (formatVersion >= 2) {
       appendReadingDays(book.readingDays, obj["readingDays"].as<JsonArrayConst>());
+    }
+    if (formatVersion >= 7) {
+      for (JsonObjectConst timedObj : obj["timedReadingDays"].as<JsonArrayConst>()) {
+        ReadingPeriodDayStats timedDay;
+        timedDay.dayOrdinal = timedObj["dayOrdinal"] | static_cast<uint32_t>(0);
+        timedDay.morningMs = timedObj["morningMs"] | static_cast<uint32_t>(0);
+        timedDay.afternoonMs = timedObj["afternoonMs"] | static_cast<uint32_t>(0);
+        timedDay.nightMs = timedObj["nightMs"] | static_cast<uint32_t>(0);
+        if (timedDay.dayOrdinal != 0 &&
+            (timedDay.morningMs != 0 || timedDay.afternoonMs != 0 || timedDay.nightMs != 0)) {
+          book.timedReadingDays.push_back(timedDay);
+        }
+      }
     }
     if (formatVersion < 3 || book.bookId.empty()) {
       store.dirty = true;
@@ -1846,7 +1904,13 @@ bool JsonSettingsIO::loadReadingStatsDocument(ReadingStatsStore& store, const Js
 
   std::stable_sort(store.sessionLog.begin(), store.sessionLog.end(),
                    [](const ReadingSessionLogEntry& left, const ReadingSessionLogEntry& right) {
-                     return left.dayOrdinal < right.dayOrdinal;
+                     if (left.dayOrdinal != right.dayOrdinal) {
+                       return left.dayOrdinal < right.dayOrdinal;
+                     }
+                     if (left.startAt != 0 && right.startAt != 0) {
+                       return left.startAt < right.startAt;
+                     }
+                     return left.startAt != 0;
                    });
   LOG_DBG("RST", "Reading stats loaded from file (%d books)", static_cast<int>(store.books.size()));
   return true;

@@ -378,6 +378,63 @@ void addReadingToDays(std::vector<ReadingDayStats>& days, const uint32_t dayOrdi
   }
 }
 
+
+uint32_t saturatingAddMs(const uint32_t current, const uint64_t added) {
+  const uint64_t total = static_cast<uint64_t>(current) + added;
+  return total > static_cast<uint64_t>(UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(total);
+}
+
+void normalizeTimedReadingDays(std::vector<ReadingPeriodDayStats>& days) {
+  std::sort(days.begin(), days.end(), [](const ReadingPeriodDayStats& left, const ReadingPeriodDayStats& right) {
+    return left.dayOrdinal < right.dayOrdinal;
+  });
+
+  std::vector<ReadingPeriodDayStats> merged;
+  merged.reserve(days.size());
+  for (const auto& day : days) {
+    if (day.dayOrdinal == 0 || (day.morningMs == 0 && day.afternoonMs == 0 && day.nightMs == 0)) {
+      continue;
+    }
+    if (!merged.empty() && merged.back().dayOrdinal == day.dayOrdinal) {
+      merged.back().morningMs = saturatingAddMs(merged.back().morningMs, day.morningMs);
+      merged.back().afternoonMs = saturatingAddMs(merged.back().afternoonMs, day.afternoonMs);
+      merged.back().nightMs = saturatingAddMs(merged.back().nightMs, day.nightMs);
+    } else {
+      merged.push_back(day);
+    }
+  }
+  days = std::move(merged);
+}
+
+enum class ReadingPeriod : uint8_t { Morning, Afternoon, Night };
+
+ReadingPeriod periodForLocalHour(const int hour) {
+  if (hour >= 6 && hour < 13) return ReadingPeriod::Morning;
+  if (hour >= 13 && hour < 21) return ReadingPeriod::Afternoon;
+  return ReadingPeriod::Night;
+}
+
+time_t nextTimedReadingBoundary(const time_t timestamp) {
+  struct tm local{};
+  localtime_r(&timestamp, &local);
+
+  if (local.tm_hour < 6) {
+    local.tm_hour = 6;
+  } else if (local.tm_hour < 13) {
+    local.tm_hour = 13;
+  } else if (local.tm_hour < 21) {
+    local.tm_hour = 21;
+  } else {
+    // Split Night at midnight so day/month aggregation stays exact.
+    local.tm_mday += 1;
+    local.tm_hour = 0;
+  }
+  local.tm_min = 0;
+  local.tm_sec = 0;
+  local.tm_isdst = -1;
+  return mktime(&local);
+}
+
 bool containsString(const std::vector<std::string>& values, const std::string& value) {
   return !value.empty() && std::find(values.begin(), values.end(), value) != values.end();
 }
@@ -543,6 +600,9 @@ void ReadingStatsStore::mergeBookInto(ReadingBookStats& primary, const ReadingBo
   primary.completed = primary.completed || duplicate.completed;
   primary.readingDays.insert(primary.readingDays.end(), duplicate.readingDays.begin(), duplicate.readingDays.end());
   normalizeReadingDays(primary.readingDays);
+  primary.timedReadingDays.insert(primary.timedReadingDays.end(), duplicate.timedReadingDays.begin(),
+                                  duplicate.timedReadingDays.end());
+  normalizeTimedReadingDays(primary.timedReadingDays);
 }
 
 void ReadingStatsStore::normalizeBook(ReadingBookStats& book) {
@@ -554,6 +614,7 @@ void ReadingStatsStore::normalizeBook(ReadingBookStats& book) {
   }
   rememberBookPath(book, book.path);
   normalizeReadingDays(book.readingDays);
+  normalizeTimedReadingDays(book.timedReadingDays);
   book.lastProgressPercent = clampPercent(book.lastProgressPercent);
   book.chapterProgressPercent = clampPercent(book.chapterProgressPercent);
 }
@@ -681,6 +742,19 @@ ReadingDayStats& ReadingStatsStore::getOrCreateBookReadingDay(ReadingBookStats& 
   return *it;
 }
 
+
+ReadingPeriodDayStats& ReadingStatsStore::getOrCreateBookTimedReadingDay(ReadingBookStats& book,
+                                                                         const uint32_t dayOrdinal) {
+  auto it = std::lower_bound(book.timedReadingDays.begin(), book.timedReadingDays.end(), dayOrdinal,
+                             [](const ReadingPeriodDayStats& day, const uint32_t ordinal) {
+                               return day.dayOrdinal < ordinal;
+                             });
+  if (it == book.timedReadingDays.end() || it->dayOrdinal != dayOrdinal) {
+    it = book.timedReadingDays.insert(it, ReadingPeriodDayStats{dayOrdinal, 0, 0, 0});
+  }
+  return *it;
+}
+
 uint32_t ReadingStatsStore::getLatestKnownTimestamp() const {
   uint32_t latestTimestamp = APP_STATE.lastKnownValidTimestamp;
   for (const auto& book : books) {
@@ -762,21 +836,78 @@ bool ReadingStatsStore::shouldIgnorePath(const std::string& path) { return isIgn
 
 void ReadingStatsStore::recordReadingTime(ReadingBookStats& book, const uint32_t epochSeconds,
                                           const uint64_t readingMs) {
-  if (!isClockValid(epochSeconds) || readingMs == 0) {
-    return;
-  }
-
+  if (!isClockValid(epochSeconds) || readingMs == 0) return;
   getOrCreateBookReadingDay(book, epochSeconds).readingMs += readingMs;
   getOrCreateReadingDay(epochSeconds).readingMs += readingMs;
 }
 
-void ReadingStatsStore::appendSessionLogEntry(const uint32_t dayOrdinal, const uint32_t sessionMs,
-                                              const ReadingBookStats& book) {
-  if (dayOrdinal == 0 || sessionMs == 0) {
-    return;
+void ReadingStatsStore::recordTimedReading(ReadingBookStats& book, const uint32_t endTimestamp,
+                                           const uint64_t readingMs) {
+  if (!isClockValid(endTimestamp) || readingMs == 0) return;
+
+  const uint64_t endMs = static_cast<uint64_t>(endTimestamp) * 1000ULL;
+  const uint64_t startMs = endMs > readingMs ? endMs - readingMs : 0;
+  if (startMs == 0) return;
+
+  if (activeSession.startTimestamp == 0) {
+    const uint32_t inferredStart = static_cast<uint32_t>(startMs / 1000ULL);
+    if (isClockValid(inferredStart)) activeSession.startTimestamp = inferredStart;
   }
 
-  sessionLog.push_back(ReadingSessionLogEntry{dayOrdinal, sessionMs, book.bookId, book.path});
+  uint64_t cursorMs = startMs;
+  while (cursorMs < endMs) {
+    const time_t cursorSeconds = static_cast<time_t>(cursorMs / 1000ULL);
+    struct tm local{};
+    localtime_r(&cursorSeconds, &local);
+
+    const time_t boundarySeconds = nextTimedReadingBoundary(cursorSeconds);
+    uint64_t boundaryMs = boundarySeconds > 0 ? static_cast<uint64_t>(boundarySeconds) * 1000ULL : endMs;
+    if (boundaryMs <= cursorMs) boundaryMs = std::min(endMs, cursorMs + 60000ULL);
+    const uint64_t segmentEndMs = std::min(endMs, boundaryMs);
+    const uint64_t segmentMs = segmentEndMs - cursorMs;
+    if (segmentMs == 0) break;
+
+    const uint32_t dayOrdinal = TimeUtils::getLocalDayOrdinal(static_cast<uint32_t>(cursorSeconds));
+    if (dayOrdinal != 0) {
+      auto& timedDay = getOrCreateBookTimedReadingDay(book, dayOrdinal);
+      switch (periodForLocalHour(local.tm_hour)) {
+        case ReadingPeriod::Morning:
+          timedDay.morningMs = saturatingAddMs(timedDay.morningMs, segmentMs);
+          activeSession.morningMs += segmentMs;
+          break;
+        case ReadingPeriod::Afternoon:
+          timedDay.afternoonMs = saturatingAddMs(timedDay.afternoonMs, segmentMs);
+          activeSession.afternoonMs += segmentMs;
+          break;
+        case ReadingPeriod::Night:
+        default:
+          timedDay.nightMs = saturatingAddMs(timedDay.nightMs, segmentMs);
+          activeSession.nightMs += segmentMs;
+          break;
+      }
+    }
+    cursorMs = segmentEndMs;
+  }
+}
+
+void ReadingStatsStore::appendSessionLogEntry(const uint32_t dayOrdinal, const uint32_t sessionMs,
+                                              const ReadingBookStats& book, const uint32_t startAt,
+                                              const uint32_t endAt, const uint32_t morningMs,
+                                              const uint32_t afternoonMs, const uint32_t nightMs) {
+  if (dayOrdinal == 0 || (sessionMs == 0 && (startAt != 0 || endAt != 0))) return;
+
+  ReadingSessionLogEntry entry;
+  entry.dayOrdinal = dayOrdinal;
+  entry.sessionMs = sessionMs;
+  entry.bookId = book.bookId;
+  entry.path = book.path;
+  entry.startAt = startAt;
+  entry.endAt = endAt;
+  entry.morningMs = morningMs;
+  entry.afternoonMs = afternoonMs;
+  entry.nightMs = nightMs;
+  sessionLog.push_back(std::move(entry));
+
   if (sessionLog.size() > MAX_SESSION_LOG_ENTRIES) {
     sessionLog.erase(sessionLog.begin(),
                      sessionLog.begin() + static_cast<std::ptrdiff_t>(sessionLog.size() - MAX_SESSION_LOG_ENTRIES));
@@ -1218,6 +1349,11 @@ void ReadingStatsStore::beginSession(const std::string& path, const std::string&
   activeSession.bookIndex = 0;
   activeSession.lastInteractionMs = millis();
   activeSession.accumulatedMs = 0;
+  activeSession.morningMs = 0;
+  activeSession.afternoonMs = 0;
+  activeSession.nightMs = 0;
+  const uint32_t actualStartTimestamp = TimeUtils::getAuthoritativeTimestamp();
+  activeSession.startTimestamp = isClockValid(actualStartTimestamp) ? actualStartTimestamp : 0;
 
   markDirty();
 }
@@ -1235,8 +1371,12 @@ void ReadingStatsStore::noteActivity() {
     auto& book = books[activeSession.bookIndex];
     book.totalReadingMs += creditedMs;
     activeSession.accumulatedMs += creditedMs;
-    const uint32_t referenceTimestamp = getReferenceTimestamp(TimeUtils::getAuthoritativeTimestamp(), book.lastReadAt);
+    const uint32_t actualTimestamp = TimeUtils::getAuthoritativeTimestamp();
+    const uint32_t referenceTimestamp = getReferenceTimestamp(actualTimestamp, book.lastReadAt);
     recordReadingTime(book, referenceTimestamp, creditedMs);
+    if (isClockValid(actualTimestamp)) {
+      recordTimedReading(book, actualTimestamp, creditedMs);
+    }
     updateBookReadTimestamp(book, referenceTimestamp);
     markDirty();
   }
@@ -1445,9 +1585,21 @@ void ReadingStatsStore::endSession() {
   if (countedSession) {
     book.sessions++;
     book.lastSessionMs = sessionMs;
-    const uint32_t sessionTimestamp = getReferenceTimestamp(TimeUtils::getAuthoritativeTimestamp(), book.lastReadAt);
-    if (isClockValid(sessionTimestamp)) {
-      appendSessionLogEntry(TimeUtils::getLocalDayOrdinal(sessionTimestamp), sessionMs, book);
+    const uint32_t actualEndTimestamp = TimeUtils::getAuthoritativeTimestamp();
+    const uint32_t fallbackTimestamp = getReferenceTimestamp(actualEndTimestamp, book.lastReadAt);
+    uint32_t sessionDayOrdinal = isClockValid(fallbackTimestamp) ? TimeUtils::getLocalDayOrdinal(fallbackTimestamp) : 0;
+
+    const bool hasRealTiming = isClockValid(activeSession.startTimestamp) && isClockValid(actualEndTimestamp) &&
+                               actualEndTimestamp >= activeSession.startTimestamp;
+    if (hasRealTiming) sessionDayOrdinal = TimeUtils::getLocalDayOrdinal(activeSession.startTimestamp);
+
+    if (sessionDayOrdinal != 0) {
+      appendSessionLogEntry(
+          sessionDayOrdinal, sessionMs, book, hasRealTiming ? activeSession.startTimestamp : 0,
+          hasRealTiming ? actualEndTimestamp : 0,
+          hasRealTiming ? static_cast<uint32_t>(std::min<uint64_t>(activeSession.morningMs, UINT32_MAX)) : 0,
+          hasRealTiming ? static_cast<uint32_t>(std::min<uint64_t>(activeSession.afternoonMs, UINT32_MAX)) : 0,
+          hasRealTiming ? static_cast<uint32_t>(std::min<uint64_t>(activeSession.nightMs, UINT32_MAX)) : 0);
     }
     markDirty();
   }
@@ -1505,18 +1657,18 @@ bool ReadingStatsStore::adjustBookReadingTime(const std::string& path, const uin
 
 bool ReadingStatsStore::importExternalReadingStats(const std::string& path, const std::string& title,
                                                     const std::string& author, const uint32_t dayOrdinal,
-                                                    const uint64_t readingMs, const uint32_t sessionsToAdd) {
-  if (path.empty() || dayOrdinal == 0 || (readingMs == 0 && sessionsToAdd == 0) || shouldIgnorePath(path) ||
-      !Storage.exists(path.c_str())) {
+                                                    const uint64_t readingMs, const uint32_t sessionsToAdd,
+                                                    const uint64_t morningMs, const uint64_t afternoonMs,
+                                                    const uint64_t nightMs, const uint32_t detailedSessions) {
+  const bool hasTimedData = morningMs > 0 || afternoonMs > 0 || nightMs > 0;
+  if (path.empty() || dayOrdinal == 0 || (readingMs == 0 && sessionsToAdd == 0 && !hasTimedData) ||
+      shouldIgnorePath(path) || !Storage.exists(path.c_str())) {
     return false;
   }
 
   const std::string resolvedBookId = BookIdentity::resolveStableBookId(path);
   const size_t index = getOrCreateBookIndex(path, title, author, "", resolvedBookId);
-  if (index >= books.size()) {
-    return false;
-  }
-
+  if (index >= books.size()) return false;
   auto& book = books[index];
 
   if (readingMs > 0) {
@@ -1524,22 +1676,37 @@ bool ReadingStatsStore::importExternalReadingStats(const std::string& path, cons
     book.totalReadingMs += readingMs;
   }
 
+  if (hasTimedData) {
+    auto& timedDay = getOrCreateBookTimedReadingDay(book, dayOrdinal);
+    timedDay.morningMs = saturatingAddMs(timedDay.morningMs, morningMs);
+    timedDay.afternoonMs = saturatingAddMs(timedDay.afternoonMs, afternoonMs);
+    timedDay.nightMs = saturatingAddMs(timedDay.nightMs, nightMs);
+  }
+
   if (sessionsToAdd > 0) {
     const uint64_t newSessionTotal = static_cast<uint64_t>(book.sessions) + sessionsToAdd;
     book.sessions =
         newSessionTotal > static_cast<uint64_t>(UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(newSessionTotal);
 
-    if (readingMs > 0) {
+    // Old snapshots have no trustworthy clock times. Keep the previous
+    // untimed summary behaviour only when no real detailed sessions accompany
+    // this delta; never synthesize a clock time.
+    if (detailedSessions == 0 && readingMs > 0) {
+      // Preserve the legacy representation for legacy snapshots exactly as before.
       const uint64_t averageSessionMs64 = std::max<uint64_t>(1, readingMs / sessionsToAdd);
       const uint32_t averageSessionMs =
           averageSessionMs64 > static_cast<uint64_t>(UINT32_MAX) ? UINT32_MAX
                                                                  : static_cast<uint32_t>(averageSessionMs64);
       book.lastSessionMs = averageSessionMs;
-
       const uint32_t logEntries = std::min<uint32_t>(sessionsToAdd, static_cast<uint32_t>(MAX_SESSION_LOG_ENTRIES));
-      for (uint32_t i = 0; i < logEntries; ++i) {
-        appendSessionLogEntry(dayOrdinal, averageSessionMs, book);
-      }
+      for (uint32_t i = 0; i < logEntries; ++i) appendSessionLogEntry(dayOrdinal, averageSessionMs, book);
+    } else if (sessionsToAdd > detailedSessions) {
+      // A cutover day can contain both new timed sessions and older sessions
+      // without real clock detail. Keep their count with an untimed zero-duration
+      // marker rather than inventing a duration or a time.
+      const uint32_t unknownSessions = sessionsToAdd - detailedSessions;
+      const uint32_t logEntries = std::min<uint32_t>(unknownSessions, static_cast<uint32_t>(MAX_SESSION_LOG_ENTRIES));
+      for (uint32_t i = 0; i < logEntries; ++i) appendSessionLogEntry(dayOrdinal, 0, book);
     }
   }
 
@@ -1549,15 +1716,56 @@ bool ReadingStatsStore::importExternalReadingStats(const std::string& path, cons
   uint32_t dayTimestamp = 0;
   if (TimeUtils::getDateFromDayOrdinal(dayOrdinal, year, month, day) &&
       TimeUtils::getTimestampForLocalDate(year, month, day, &dayTimestamp) && isClockValid(dayTimestamp)) {
-    if (!isClockValid(book.firstReadAt) || dayTimestamp < book.firstReadAt) {
-      book.firstReadAt = dayTimestamp;
-    }
-    if (!isClockValid(book.lastReadAt) || dayTimestamp > book.lastReadAt) {
-      book.lastReadAt = dayTimestamp;
-    }
+    if (!isClockValid(book.firstReadAt) || dayTimestamp < book.firstReadAt) book.firstReadAt = dayTimestamp;
+    if (!isClockValid(book.lastReadAt) || dayTimestamp > book.lastReadAt) book.lastReadAt = dayTimestamp;
   }
 
   rebuildAggregatedReadingDays();
+  markDirty();
+  return true;
+}
+
+bool ReadingStatsStore::importExternalReadingSession(const std::string& path, const uint32_t startAt,
+                                                      const uint32_t endAt, const uint32_t sessionMs,
+                                                      const uint32_t morningMs, const uint32_t afternoonMs,
+                                                      const uint32_t nightMs) {
+  if (path.empty() || !isClockValid(startAt) || !isClockValid(endAt) || endAt < startAt || sessionMs == 0 ||
+      shouldIgnorePath(path) || !Storage.exists(path.c_str())) {
+    return false;
+  }
+
+  const size_t index = findBookIndexByPath(path);
+  if (index >= books.size()) return false;
+  auto& book = books[index];
+  const uint32_t dayOrdinal = TimeUtils::getLocalDayOrdinal(startAt);
+  if (dayOrdinal == 0) return false;
+
+  // Upsert by real start time. An active Kindle session can be pushed more
+  // than once as its duration grows, and must remain one session on the X4.
+  for (auto& existing : sessionLog) {
+    if (existing.startAt == startAt && sessionMatchesBook(existing, book)) {
+      const uint32_t mergedEndAt = std::max(existing.endAt, endAt);
+      const bool changed = existing.dayOrdinal != dayOrdinal || existing.sessionMs != sessionMs ||
+                           existing.endAt != mergedEndAt || existing.morningMs != morningMs ||
+                           existing.afternoonMs != afternoonMs || existing.nightMs != nightMs;
+      if (!changed) {
+        return false;
+      }
+
+      existing.dayOrdinal = dayOrdinal;
+      existing.sessionMs = sessionMs;
+      existing.endAt = mergedEndAt;
+      existing.morningMs = morningMs;
+      existing.afternoonMs = afternoonMs;
+      existing.nightMs = nightMs;
+      book.lastSessionMs = sessionMs;
+      markDirty();
+      return true;
+    }
+  }
+
+  appendSessionLogEntry(dayOrdinal, sessionMs, book, startAt, endAt, morningMs, afternoonMs, nightMs);
+  book.lastSessionMs = sessionMs;
   markDirty();
   return true;
 }
