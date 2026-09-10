@@ -14,7 +14,7 @@ struct DisplayDateInfo {
 DisplayDateInfo getDisplayDateInfo();
 std::string getDisplayDateText();
 std::string getSyncDayReminderText();
-void drawTopLine(GfxRenderer& renderer, const std::string& dateText);
+void drawTopLine(GfxRenderer& renderer, const std::string& dateText, int leftInset = 0);
 void drawHeaderWithDate(GfxRenderer& renderer, const char* title, const char* subtitle = nullptr);
 
 }  // namespace HeaderDateUtils

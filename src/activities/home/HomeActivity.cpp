@@ -11,6 +11,9 @@
 #include <Txt.h>
 #include <Utf8.h>
 #include <Xtc.h>
+#ifndef SIMULATOR
+#include <WiFi.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -41,6 +44,7 @@
 #include "activities/settings/ClockSyncActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
+#include "components/icons/wifi.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
@@ -54,6 +58,28 @@ constexpr int LYRA_HOME_SHORTCUT_PAGE_SIZE = 5;
 constexpr const char* CAROUSEL_FRAME_CACHE_DIR = "/.crosspoint/home-carousel-cache";
 constexpr uint32_t FNV1A_OFFSET = 2166136261UL;
 constexpr uint32_t FNV1A_PRIME = 16777619UL;
+constexpr int HOME_WIFI_ICON_SIZE = 32;
+constexpr int HOME_WIFI_ICON_GAP = 8;
+
+bool isHomeWifiActive() {
+#ifndef SIMULATOR
+  return WiFi.getMode() != WIFI_MODE_NULL;
+#else
+  return false;
+#endif
+}
+
+void drawHomeTopLine(GfxRenderer& renderer, const bool wifiActive) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int leftInset = wifiActive ? HOME_WIFI_ICON_SIZE + HOME_WIFI_ICON_GAP : 0;
+
+  HeaderDateUtils::drawTopLine(renderer, HeaderDateUtils::getDisplayDateText(), leftInset);
+
+  if (wifiActive) {
+    renderer.drawIcon(WifiIcon, metrics.contentSidePadding, metrics.topPadding + 1, HOME_WIFI_ICON_SIZE,
+                      HOME_WIFI_ICON_SIZE);
+  }
+}
 
 struct HomeShortcutEntry {
   const ShortcutDefinition* definition = nullptr;
@@ -584,6 +610,7 @@ void HomeActivity::onEnter() {
   invalidateCarouselFrameHash();
   carouselFramesReady = false;
   carouselCoverLoadAttemptPath.clear();
+  wifiIndicatorVisible = isHomeWifiActive();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   reloadHomeBooks(metrics.homeRecentBooksCount);
@@ -725,7 +752,7 @@ bool HomeActivity::renderCarouselFrame(int bookIndex) {
   const auto pageWidth = renderer.getScreenWidth();
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr, nullptr);
-  HeaderDateUtils::drawTopLine(renderer, HeaderDateUtils::getDisplayDateText());
+  drawHomeTopLine(renderer, wifiIndicatorVisible);
 
   bool localCoverRendered = false;
   bool localCoverBufferStored = false;
@@ -805,6 +832,12 @@ void HomeActivity::preRenderCarouselFrames() {
 }
 
 void HomeActivity::loop() {
+  const bool wifiActive = isHomeWifiActive();
+  if (wifiActive != wifiIndicatorVisible) {
+    wifiIndicatorVisible = wifiActive;
+    requestUpdate();
+  }
+
   if (firstRenderDone && !recentsLoaded && !recentsLoading) {
     loadRecentCovers(UITheme::getInstance().getMetrics().homeCoverHeight);
     return;
@@ -1059,7 +1092,7 @@ void HomeActivity::render(RenderLock&&) {
     if (frameBuffer) {
       renderer.fillRect(0, 0, pageWidth, metrics.homeTopPadding, false);
       GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr, nullptr);
-      HeaderDateUtils::drawTopLine(renderer, HeaderDateUtils::getDisplayDateText());
+      drawHomeTopLine(renderer, wifiIndicatorVisible);
       GUI.drawCarouselBorder(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                              inCarouselRow);
       usedCarouselFrame = true;
@@ -1076,7 +1109,7 @@ void HomeActivity::render(RenderLock&&) {
     bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr, nullptr);
-    HeaderDateUtils::drawTopLine(renderer, HeaderDateUtils::getDisplayDateText());
+    drawHomeTopLine(renderer, wifiIndicatorVisible);
 
     coverRectX = 0;
     coverRectY = metrics.homeTopPadding;

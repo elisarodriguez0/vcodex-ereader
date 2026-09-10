@@ -15,7 +15,7 @@
 
 namespace {
 void drawHeaderTopLine(const GfxRenderer& renderer, const ThemeMetrics& metrics, const int pageWidth,
-                       const std::string& dateText, const std::string& reminderText) {
+                       const std::string& dateText, const std::string& reminderText, const int leftInset) {
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   const int batteryX = pageWidth - 12 - metrics.batteryWidth;
@@ -34,7 +34,7 @@ void drawHeaderTopLine(const GfxRenderer& renderer, const ThemeMetrics& metrics,
   }
 
   if (!reminderText.empty()) {
-    const int reminderX = metrics.contentSidePadding;
+    const int reminderX = metrics.contentSidePadding + std::max(0, leftInset);
     const int maxReminderWidth = std::max(0, dateX - reminderX - 12);
     if (maxReminderWidth > 0) {
       const std::string truncated = renderer.truncatedText(SMALL_FONT_ID, reminderText.c_str(), maxReminderWidth);
@@ -118,15 +118,15 @@ std::string HeaderDateUtils::getSyncDayReminderText() {
   return APP_STATE.shouldShowSyncDayReminder(threshold) ? std::string(tr(STR_SYNC_DAY_REMINDER_MESSAGE)) : "";
 }
 
-void HeaderDateUtils::drawTopLine(GfxRenderer& renderer, const std::string& dateText) {
+void HeaderDateUtils::drawTopLine(GfxRenderer& renderer, const std::string& dateText, const int leftInset) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
-  drawHeaderTopLine(renderer, metrics, pageWidth, dateText, getSyncDayReminderText());
+  drawHeaderTopLine(renderer, metrics, pageWidth, dateText, getSyncDayReminderText(), leftInset);
 }
 
 void HeaderDateUtils::drawHeaderWithDate(GfxRenderer& renderer, const char* title, const char* subtitle) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title, subtitle);
-  drawHeaderTopLine(renderer, metrics, pageWidth, getDisplayDateText(), getSyncDayReminderText());
+  drawHeaderTopLine(renderer, metrics, pageWidth, getDisplayDateText(), getSyncDayReminderText(), 0);
 }
