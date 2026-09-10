@@ -991,7 +991,11 @@ void HomeActivity::loop() {
       onAppsOpen();
     } else if (selectedEntry.isSyncAll) {
       startActivityForResult(std::make_unique<EreaderSyncActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestFreshHomeRender(true); });
+                             [this](const ActivityResult&) {
+                               const auto& metrics = UITheme::getInstance().getMetrics();
+                               reloadHomeBooks(metrics.homeRecentBooksCount);
+                               requestFreshHomeRender(true);
+                             });
     } else if (selectedEntry.definition) {
       switch (selectedEntry.definition->id) {
         case ShortcutId::BrowseFiles:

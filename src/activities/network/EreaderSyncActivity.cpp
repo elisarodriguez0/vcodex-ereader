@@ -23,11 +23,13 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "ReadingStatsStore.h"
+#include "RecentBooksStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
+#include "util/BookIdentity.h"
 #include "util/NetworkMemory.h"
 #include "util/TimeUtils.h"
 
@@ -62,6 +64,7 @@ void EreaderSyncActivity::onEnter() {
   wallpapers = {};
   versions.clear();
   booksToIndex.clear();
+  booksToPromote.clear();
   indexedBooks = 0;
   indexFailed = 0;
   statusMessage.clear();
@@ -478,6 +481,9 @@ bool EreaderSyncActivity::syncBook(const OpdsServer& server, const RemoteItem& i
 
   clearBookCache(finalPath);
   queueBookForIndexingIfNeeded(finalPath);
+  if (!existed && std::find(booksToPromote.begin(), booksToPromote.end(), finalPath) == booksToPromote.end()) {
+    booksToPromote.push_back(finalPath);
+  }
   existed ? books.updated++ : books.added++;
   setVersion('B', item.name, item.etag);
   return true;
@@ -511,6 +517,17 @@ void EreaderSyncActivity::indexQueuedBooks() {
     if (epub.load(true, SETTINGS.embeddedStyle == 0)) {
       indexedBooks++;
       LOG_DBG(LOG_TAG, "Indexed EPUB after sync: %s", path.c_str());
+
+      // Lyra Home is backed by RecentBooksStore, not by the EPUB index.
+      // A newly downloaded book should therefore behave like a newly opened
+      // book for Home purposes, without changing APP_STATE.openEpubPath or
+      // starting a fake reading session. Existing/updated books are not
+      // promoted, so Sync All cannot reshuffle the user's reading history.
+      if (std::find(booksToPromote.begin(), booksToPromote.end(), path) != booksToPromote.end()) {
+        const std::string bookId = BookIdentity::resolveStableBookId(path);
+        RECENT_BOOKS.addBook(path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath(), bookId);
+        LOG_DBG(LOG_TAG, "Added newly synced EPUB to recents: %s", path.c_str());
+      }
     } else {
       indexFailed++;
       LOG_ERR(LOG_TAG, "Could not index EPUB after sync: %s", path.c_str());
@@ -519,6 +536,8 @@ void EreaderSyncActivity::indexQueuedBooks() {
 
   booksToIndex.clear();
   booksToIndex.shrink_to_fit();
+  booksToPromote.clear();
+  booksToPromote.shrink_to_fit();
 }
 
 bool EreaderSyncActivity::syncWallpaper(const OpdsServer& server, const RemoteItem& item) {

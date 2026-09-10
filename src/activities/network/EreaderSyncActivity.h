@@ -56,6 +56,7 @@ class EreaderSyncActivity final : public Activity {
   Counters books;
   Counters wallpapers;
   std::vector<std::string> booksToIndex;
+  std::vector<std::string> booksToPromote;
   int indexedBooks = 0;
   int indexFailed = 0;
   bool daySynced = false;
