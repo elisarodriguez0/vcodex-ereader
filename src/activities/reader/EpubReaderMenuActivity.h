@@ -28,7 +28,8 @@ class EpubReaderMenuActivity final : public Activity {
     DISPLAY_QR,
     MARK_AS_FINISHED,
     GO_HOME,
-    SYNC,
+    SYNC_PUSH,
+    SYNC_PULL,
     DELETE_CACHE
   };
 

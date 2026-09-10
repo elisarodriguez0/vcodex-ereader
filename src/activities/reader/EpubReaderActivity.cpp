@@ -1208,10 +1208,17 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       requestUpdate();
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::SYNC: {
+    case EpubReaderMenuActivity::MenuAction::SYNC_PUSH: {
       if (KOREADER_STORE.hasCredentials()) {
         READING_STATS.noteActivity();
-        launchKOReaderSync(SyncLaunchMode::COMPARE);
+        launchKOReaderSync(SyncLaunchMode::PUSH_LOCAL);
+      }
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::SYNC_PULL: {
+      if (KOREADER_STORE.hasCredentials()) {
+        READING_STATS.noteActivity();
+        launchKOReaderSync(SyncLaunchMode::PULL_REMOTE);
       }
       break;
     }
