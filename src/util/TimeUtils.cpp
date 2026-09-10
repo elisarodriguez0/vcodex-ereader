@@ -131,7 +131,12 @@ bool TimeUtils::pollNtpSync() {
 
   syncedThisBoot = true;
   ntpSyncInProgress = false;
-  writeRtcFromUtcEpoch(static_cast<uint32_t>(currentTime));
+  const uint32_t syncedTimestamp = static_cast<uint32_t>(currentTime);
+  writeRtcFromUtcEpoch(syncedTimestamp);
+  // Keep a distinct marker for a real network time exchange. RTC restoration
+  // also makes the system clock valid, but must not make Auto Sync Day think
+  // that NTP already ran today. The normal NTP caller persists APP_STATE.
+  APP_STATE.registerNetworkTimeSync(syncedTimestamp);
   return true;
 }
 

@@ -623,9 +623,11 @@ void loop() {
   const bool foregroundActivity =
       gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity();
 
-  if (foregroundActivity || activityManager.preventAutoSleep()) {
-    lastActivityTime = millis();         // Reset inactivity timer
-    powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+  const bool backgroundActivity = activityManager.preventAutoSleep() || SilentTimeSync::isPendingOrRunning();
+  if (foregroundActivity || backgroundActivity) {
+    lastActivityTime = millis();
+    // Network work must not race a CPU-frequency reduction or auto-sleep.
+    powerManager.setPowerSaving(false);
   }
 
   if (foregroundActivity) {

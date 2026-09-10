@@ -725,6 +725,7 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["readerActivityLoadCount"] = s.readerActivityLoadCount;
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
   doc["lastKnownValidTimestamp"] = s.lastKnownValidTimestamp;
+  doc["lastNtpSyncTimestamp"] = s.lastNtpSyncTimestamp;
   doc["lastReadingStatsBackupDayOrdinal"] = s.lastReadingStatsBackupDayOrdinal;
   doc["syncDayReminderStartCount"] = s.syncDayReminderStartCount;
   doc["syncDayReminderLatched"] = s.syncDayReminderLatched;
@@ -787,6 +788,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.readerActivityLoadCount = doc["readerActivityLoadCount"] | (uint8_t)0;
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
   s.lastKnownValidTimestamp = doc["lastKnownValidTimestamp"] | static_cast<uint32_t>(0);
+  s.lastNtpSyncTimestamp = doc["lastNtpSyncTimestamp"] | static_cast<uint32_t>(0);
   s.lastReadingStatsBackupDayOrdinal = doc["lastReadingStatsBackupDayOrdinal"] | static_cast<uint32_t>(0);
   s.syncDayReminderStartCount = doc["syncDayReminderStartCount"] | (uint8_t)0;
   s.syncDayReminderLatched = doc["syncDayReminderLatched"] | false;

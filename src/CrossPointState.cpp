@@ -135,6 +135,15 @@ void CrossPointState::registerValidTimeSync(const uint32_t validTimestamp) {
   }
 }
 
+void CrossPointState::registerNetworkTimeSync(const uint32_t validTimestamp) {
+  if (validTimestamp == 0) {
+    return;
+  }
+
+  registerValidTimeSync(validTimestamp);
+  lastNtpSyncTimestamp = validTimestamp;
+}
+
 bool CrossPointState::shouldShowSyncDayReminder(const uint8_t reminderThreshold) const {
   if (reminderThreshold == 0) {
     return false;

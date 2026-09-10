@@ -67,6 +67,9 @@ class CrossPointState {
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
   uint32_t lastKnownValidTimestamp = 0;
+  // Last timestamp obtained from a real NTP exchange. Unlike
+  // lastKnownValidTimestamp, RTC restoration must never update this field.
+  uint32_t lastNtpSyncTimestamp = 0;
   uint32_t lastReadingStatsBackupDayOrdinal = 0;
   uint8_t syncDayReminderStartCount = 0;
   bool syncDayReminderLatched = false;
@@ -85,6 +88,7 @@ class CrossPointState {
   uint16_t getMostRecentSleepIndex() const;
   void recordUsefulStart(uint8_t reminderThreshold);
   void registerValidTimeSync(uint32_t validTimestamp);
+  void registerNetworkTimeSync(uint32_t validTimestamp);
   bool shouldShowSyncDayReminder(uint8_t reminderThreshold) const;
 
  private:

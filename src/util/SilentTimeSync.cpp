@@ -15,8 +15,8 @@
 
 namespace {
 
-constexpr uint32_t POST_BOOT_DELAY_MS = 2000;
-constexpr uint32_t USER_ACTIVITY_RETRY_DELAY_MS = 3000;
+constexpr uint32_t POST_BOOT_DELAY_MS = 5000;
+constexpr uint32_t USER_ACTIVITY_RETRY_DELAY_MS = 5000;
 constexpr uint32_t SCAN_TIMEOUT_MS = 4000;
 constexpr uint32_t CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t NTP_TIMEOUT_MS = 4000;
@@ -59,13 +59,6 @@ void finishAttempt() {
   candidate = Candidate{};
   deadlineMs = 0;
   state = State::IDLE;
-}
-
-void postponeAfterUserActivity() {
-  shutDownWifi();
-  candidate = Candidate{};
-  deadlineMs = millis() + USER_ACTIVITY_RETRY_DELAY_MS;
-  state = State::WAITING;
 }
 
 bool selectCandidate(Candidate& selected) {
@@ -113,19 +106,17 @@ bool selectCandidate(Candidate& selected) {
   return selected.valid;
 }
 
-bool alreadySynchronizedForCurrentDay() {
+bool wasNetworkTimeSyncedToday() {
   const uint32_t currentTimestamp = TimeUtils::getCurrentValidTimestamp();
-  if (!TimeUtils::isClockValid(currentTimestamp) ||
-      !TimeUtils::isClockValid(APP_STATE.lastKnownValidTimestamp)) {
+  const uint32_t lastNtpTimestamp = APP_STATE.lastNtpSyncTimestamp;
+
+  if (!TimeUtils::isClockValid(currentTimestamp) || !TimeUtils::isClockValid(lastNtpTimestamp)) {
     return false;
   }
 
-  const uint32_t currentDay =
-      TimeUtils::getLocalDayOrdinal(currentTimestamp);
-  const uint32_t savedDay =
-      TimeUtils::getLocalDayOrdinal(APP_STATE.lastKnownValidTimestamp);
-
-  return currentDay != 0 && currentDay == savedDay;
+  const uint32_t currentDay = TimeUtils::getLocalDayOrdinal(currentTimestamp);
+  const uint32_t lastNtpDay = TimeUtils::getLocalDayOrdinal(lastNtpTimestamp);
+  return currentDay != 0 && currentDay == lastNtpDay;
 }
 
 bool prerequisitesStillAllowAttempt() {
@@ -133,8 +124,11 @@ bool prerequisitesStillAllowAttempt() {
     return false;
   }
 
-  if (alreadySynchronizedForCurrentDay()) {
-    LOG_DBG("TIME", "Auto Sync Day skipped: current day is already trusted");
+  // lastKnownValidTimestamp cannot be used for this check: restoring the RTC
+  // intentionally updates it on every boot. lastNtpSyncTimestamp changes only
+  // after an actual NTP exchange, so it is safe to use as the daily marker.
+  if (wasNetworkTimeSyncedToday()) {
+    LOG_DBG("TIME", "Auto Sync Day skipped: NTP already completed today");
     return false;
   }
 
@@ -201,6 +195,14 @@ void SilentTimeSync::schedule(const bool allowWifiAttempt) {
   deadlineMs = 0;
 
   if (!allowWifiAttempt || !SETTINGS.autoSyncDay) {
+    return;
+  }
+
+  // This check is pure clock/state work: do it before scheduling any Wi-Fi so
+  // repeated boots on the same day never churn the ESP32 network stack.
+  TimeUtils::configureTimezone();
+  if (wasNetworkTimeSyncedToday()) {
+    LOG_DBG("TIME", "Auto Sync Day not scheduled: NTP already completed today");
     return;
   }
 
@@ -284,7 +286,7 @@ bool SilentTimeSync::tick() {
             TimeUtils::getCurrentValidTimestamp();
 
         if (TimeUtils::isClockValid(syncedTimestamp)) {
-          APP_STATE.registerValidTimeSync(syncedTimestamp);
+          APP_STATE.registerNetworkTimeSync(syncedTimestamp);
           APP_STATE.saveToFile();
           WIFI_STORE.setLastConnectedSsid(candidate.credential.ssid);
           LOG_DBG("TIME", "Auto Sync Day: background synchronization complete");
@@ -315,12 +317,17 @@ void SilentTimeSync::notifyUserActivity() {
   }
 
   if (state == State::WAITING) {
+    // Require a quiet window before starting Wi-Fi. Repeated input simply
+    // pushes the start back; no network state exists yet, so this is safe.
     deadlineMs = millis() + USER_ACTIVITY_RETRY_DELAY_MS;
     return;
   }
 
-  LOG_DBG("TIME", "Auto Sync Day: foreground activity detected, postponing");
-  postponeAfterUserActivity();
+  // Never tear down an asynchronous Wi-Fi scan/connect/NTP operation from the
+  // input path. The previous implementation repeatedly switched WIFI_OFF while
+  // ESP32 network work was active, then restarted it three seconds later. Let
+  // the in-flight attempt reach its normal success/timeout cleanup instead.
+  LOG_DBG("TIME", "Auto Sync Day: foreground activity while network attempt is active; allowing safe completion");
 }
 
 bool SilentTimeSync::isPendingOrRunning() {
