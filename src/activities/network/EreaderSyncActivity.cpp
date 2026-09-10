@@ -249,7 +249,14 @@ bool EreaderSyncActivity::fetchManifest(const OpdsServer& server, std::vector<Re
     }
   };
 
-  parseArray(document["books"], remoteBooks);
+  const JsonArrayConst xteinkBooks = document["books_xteink"].as<JsonArrayConst>();
+  if (!xteinkBooks.isNull() && xteinkBooks.size() > 0) {
+    LOG_DBG(LOG_TAG, "Using X4-optimized EPUB manifest (%u books)", static_cast<unsigned>(xteinkBooks.size()));
+    parseArray(document["books_xteink"], remoteBooks);
+  } else {
+    // Backward compatibility for books uploaded before X4 variants existed.
+    parseArray(document["books"], remoteBooks);
+  }
   parseArray(document["wallpapers_xteink"], remoteWallpapers);
   return true;
 }
