@@ -11,7 +11,6 @@
 
 #include "fontIds.h"
 
-// Initialize the static instance
 CrossPointSettings CrossPointSettings::instance;
 
 void readAndValidate(FsFile& file, uint8_t& member, const uint8_t maxValue) {
@@ -33,12 +32,12 @@ constexpr char LEXEND_SD_FAMILY_NAME[] = "Lexend";
 
 uint8_t migrateLegacyUiTheme(const uint8_t legacyUiTheme) {
   switch (legacyUiTheme) {
-    case 0:  // Classic
-    case 1:  // Lyra
+    case 0:
+    case 1:
     default:
       return CrossPointSettings::LYRA;
-    case 2:  // Lyra Extended
-    case 3:  // Lyra Custom
+    case 2:
+    case 3:
       return CrossPointSettings::LYRA_CUSTOM;
   }
 }

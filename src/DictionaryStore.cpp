@@ -18,7 +18,7 @@
 #include "fontIds.h"
 
 namespace {
-constexpr uint32_t CACHE_MAGIC = 0x44435458;  // DCTX
+constexpr uint32_t CACHE_MAGIC = 0x44435458;
 constexpr uint8_t NULL_TERMINATED_TYPES[] = {'m', 'l', 'g', 't', 'x', 'y', 'k', 'w', 'h', 'n', 'r'};
 constexpr uint8_t DEFINITION_TEXT_SIZE_CONFIG_VERSION = 4;
 constexpr size_t MAX_METADATA_TEXT_BYTES = 96;
@@ -316,10 +316,10 @@ bool appendReplacementForUtf8Token(const std::string& input, const size_t pos, s
   };
 
   static constexpr Replacement REPLACEMENTS[] = {
-      {"\xEF\xBF\xBD", ""},    // Unicode replacement char.
-      {"\xE2\x80\xA3", "- "},   // Triangular bullet.
-      {"\xE2\x81\x83", "- "},   // Hyphen bullet.
-      {"\xE2\x96\xA0", "- "},   // Black square.
+      {"\xEF\xBF\xBD", ""},
+      {"\xE2\x80\xA3", "- "},
+      {"\xE2\x81\x83", "- "},
+      {"\xE2\x96\xA0", "- "},
       {"\xE2\x96\xBA", "- "},   // Black right pointer.
       {"\xE2\x96\xB8", "- "},   // Small right triangle.
       {"\xE2\x97\x86", "- "},   // Black diamond.

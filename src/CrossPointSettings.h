@@ -5,115 +5,188 @@
 #include <cstdint>
 #include <iosfwd>
 
+/**
+ * Global settings and configuration for CPR-vCodex firmware.
+ * 
+ * Provides a singleton interface to access and modify device settings including:
+ * - Display modes (sleep screen, status bar, orientation)
+ * - Button remapping and layout
+ * - Reader preferences (fonts, margins, spacing)
+ * - WiFi and network settings
+ * - Reading statistics tracking
+ * 
+ * Settings are persisted to settings.json on the SD card.
+ * Enumerations use explicit values to ensure compatibility with JSON serialization
+ * and stored data (e.g., legacy fields must maintain numeric values).
+ */
 class CrossPointSettings {
  private:
-  // Private constructor for singleton
+  /* Private singleton constructor */
   CrossPointSettings() = default;
 
-  // Static instance
+  /* Static singleton instance */
   static CrossPointSettings instance;
 
  public:
-  // Delete copy constructor and assignment
+  /* Prevent copying or assignment of singleton instance. */
   CrossPointSettings(const CrossPointSettings&) = delete;
   CrossPointSettings& operator=(const CrossPointSettings&) = delete;
 
+  /**
+   * Sleep screen display mode enumeration.
+   * 
+   * Determines what appears on the display when the device enters sleep mode
+   * (called by long-pressing power button). Options include static image,
+   * book cover, reading statistics, or blank display.
+   */
   enum SLEEP_SCREEN_MODE {
-    DARK = 0,
-    LIGHT = 1,
-    CUSTOM = 2,
-    COVER = 3,
-    BLANK = 4,
-    COVER_CUSTOM = 5,
-    READING_DASHBOARD = 6,
-    COVER_STATS = 7,
-    COVER_STATS_V2 = 8,
-    CUSTOM_STATS = 9,
-    CUSTOM_STATS_V2 = 10,
-    SLEEP_SCREEN_MODE_COUNT
+    DARK = 0,                 /**< Black screen (power efficient) */
+    LIGHT = 1,                /**< White screen (power efficient) */
+    CUSTOM = 2,               /**< Custom image from file */
+    COVER = 3,                /**< Current book cover */
+    BLANK = 4,                /**< Blank/empty display */
+    COVER_CUSTOM = 5,         /**< Book cover with custom overlay */
+    READING_DASHBOARD = 6,    /**< Reading statistics dashboard */
+    COVER_STATS = 7,          /**< Book cover with stats overlay */
+    COVER_STATS_V2 = 8,       /**< Enhanced book cover with stats (v2) */
+    CUSTOM_STATS = 9,         /**< Custom image with stats overlay */
+    CUSTOM_STATS_V2 = 10,     /**< Enhanced custom image with stats (v2) */
+    SLEEP_SCREEN_MODE_COUNT   /**< Number of modes (for iteration) */
   };
-  enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
+
+  /**
+   * Sleep screen cover image scaling mode.
+   * How to fit the book cover on the sleep screen.
+   */
+  enum SLEEP_SCREEN_COVER_MODE {
+    FIT = 0,                                    /**< Scale to fit within bounds (letterbox) */
+    CROP = 1,                                  /**< Crop to cover entire screen */
+    SLEEP_SCREEN_COVER_MODE_COUNT              /**< Number of modes */
+  };
+
+  /**
+   * Sleep screen image filter/effect enumeration.
+   * Visual enhancements for monochrome e-ink display compatibility.
+   */
   enum SLEEP_SCREEN_COVER_FILTER {
-    NO_FILTER = 0,
-    BLACK_AND_WHITE = 1,
-    INVERTED_BLACK_AND_WHITE = 2,
-    SLEEP_SCREEN_COVER_FILTER_COUNT
+    NO_FILTER = 0,                             /**< Original colors */
+    BLACK_AND_WHITE = 1,                       /**< Grayscale conversion */
+    INVERTED_BLACK_AND_WHITE = 2,              /**< Inverted grayscale */
+    SLEEP_SCREEN_COVER_FILTER_COUNT            /**< Number of filters */
   };
 
-  // Status bar enum - legacy
+  /**
+   * Legacy status bar mode enumeration.
+   * Deprecated in favor of individual status bar feature toggles.
+   * Maintained for backward compatibility with stored settings.
+   */
   enum STATUS_BAR_MODE {
-    NONE = 0,
-    NO_PROGRESS = 1,
-    FULL = 2,
-    BOOK_PROGRESS_BAR = 3,
-    ONLY_BOOK_PROGRESS_BAR = 4,
-    CHAPTER_PROGRESS_BAR = 5,
-    STATUS_BAR_MODE_COUNT
+    NONE = 0,                                  /**< No status bar */
+    NO_PROGRESS = 1,                           /**< Status bar without progress indicator */
+    FULL = 2,                                  /**< Full status bar with all elements */
+    BOOK_PROGRESS_BAR = 3,                     /**< Status bar with book progress only */
+    ONLY_BOOK_PROGRESS_BAR = 4,                /**< Book progress bar only */
+    CHAPTER_PROGRESS_BAR = 5,                  /**< Status bar with chapter progress only */
+    STATUS_BAR_MODE_COUNT                      /**< Number of modes */
   };
+
+  /**
+   * Status bar progress indicator type.
+   * Which progress metric to display in the status bar.
+   */
   enum STATUS_BAR_PROGRESS_BAR {
-    BOOK_PROGRESS = 0,
-    CHAPTER_PROGRESS = 1,
-    HIDE_PROGRESS = 2,
-    STATUS_BAR_PROGRESS_BAR_COUNT
+    BOOK_PROGRESS = 0,                         /**< Show overall book progress (0-100%) */
+    CHAPTER_PROGRESS = 1,                      /**< Show current chapter progress (0-100%) */
+    HIDE_PROGRESS = 2,                         /**< Hide progress indicator */
+    STATUS_BAR_PROGRESS_BAR_COUNT              /**< Number of options */
   };
+
+  /**
+   * Status bar progress bar height/thickness preference.
+   */
   enum STATUS_BAR_PROGRESS_BAR_THICKNESS {
-    PROGRESS_BAR_THIN = 0,
-    PROGRESS_BAR_NORMAL = 1,
-    PROGRESS_BAR_THICK = 2,
-    STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
+    PROGRESS_BAR_THIN = 0,                     /**< Minimal thickness (1-2 pixels) */
+    PROGRESS_BAR_NORMAL = 1,                   /**< Default thickness (~3-4 pixels) */
+    PROGRESS_BAR_THICK = 2,                    /**< Prominent thickness (~5-8 pixels) */
+    STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT    /**< Number of options */
   };
-  enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
+
+  /**
+   * Status bar title display option.
+   * What text is shown in the title area of the status bar.
+   */
+  enum STATUS_BAR_TITLE {
+    BOOK_TITLE = 0,                            /**< Show current book title */
+    CHAPTER_TITLE = 1,                         /**< Show current chapter title */
+    HIDE_TITLE = 2,                            /**< Hide title */
+    STATUS_BAR_TITLE_COUNT                     /**< Number of options */
+  };
+
+  /**
+   * Status bar mode for XTC ebook format (platform-specific).
+   */
   enum XTC_STATUS_BAR_MODE {
-    XTC_STATUS_BAR_HIDE = 0,
-    XTC_STATUS_BAR_BOTTOM = 1,
-    XTC_STATUS_BAR_TOP = 2,
-    XTC_STATUS_BAR_MODE_COUNT
+    XTC_STATUS_BAR_HIDE = 0,                   /**< No status bar for XTC */
+    XTC_STATUS_BAR_BOTTOM = 1,                 /**< Status bar at bottom of screen */
+    XTC_STATUS_BAR_TOP = 2,                    /**< Status bar at top of screen */
+    XTC_STATUS_BAR_MODE_COUNT                  /**< Number of modes */
   };
-  // STATUS_BAR_CLOCK_RIGHT = 1 matches the legacy boolean "show clock" value.
+
+  /**
+   * Status bar clock display position.
+   * 
+   * VALUE 1 (STATUS_BAR_CLOCK_RIGHT) maintains backward compatibility with
+   * legacy boolean setting (0=hide, 1=show on right).
+   */
   enum STATUS_BAR_CLOCK {
-    STATUS_BAR_CLOCK_HIDE = 0,
-    STATUS_BAR_CLOCK_RIGHT = 1,
-    STATUS_BAR_CLOCK_LEFT = 2,
-    STATUS_BAR_CLOCK_COUNT
+    STATUS_BAR_CLOCK_HIDE = 0,                 /**< Hide clock */
+    STATUS_BAR_CLOCK_RIGHT = 1,                /**< Show clock on right (legacy boolean compat) */
+    STATUS_BAR_CLOCK_LEFT = 2,                 /**< Show clock on left */
+    STATUS_BAR_CLOCK_COUNT                     /**< Number of options */
   };
 
+  /**
+   * Display orientation mode enumeration.
+   * Determines how the device rotates the screen.
+   */
   enum ORIENTATION {
-    PORTRAIT = 0,       // 480x800 logical coordinates (current default)
-    LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
-    INVERTED = 2,       // 480x800 logical coordinates, inverted
-    LANDSCAPE_CCW = 3,  // 800x480 logical coordinates, native panel orientation
-    ORIENTATION_COUNT
+    PORTRAIT = 0,                              /**< Standard portrait orientation (0°) */
+    LANDSCAPE_CW = 1,                          /**< Rotated 90° clockwise */
+    INVERTED = 2,                              /**< Upside down (180°) */
+    LANDSCAPE_CCW = 3,                         /**< Rotated 270° clockwise (90° counter-clockwise) */
+    ORIENTATION_COUNT                          /**< Number of orientations */
   };
 
-  // Front button layout options (legacy)
-  // Default: Back, Confirm, Left, Right
-  // Swapped: Left, Right, Back, Confirm
+  /**
+   * Front button layout configuration (legacy, for backward compatibility).
+   * User-selectable button position presets.
+   */
   enum FRONT_BUTTON_LAYOUT {
-    BACK_CONFIRM_LEFT_RIGHT = 0,
-    LEFT_RIGHT_BACK_CONFIRM = 1,
-    LEFT_BACK_CONFIRM_RIGHT = 2,
-    BACK_CONFIRM_RIGHT_LEFT = 3,
-    FRONT_BUTTON_LAYOUT_COUNT
+    BACK_CONFIRM_LEFT_RIGHT = 0,               /**< Back, Confirm, Left, Right */
+    LEFT_RIGHT_BACK_CONFIRM = 1,               /**< Left, Right, Back, Confirm */
+    LEFT_BACK_CONFIRM_RIGHT = 2,               /**< Left, Back, Confirm, Right */
+    BACK_CONFIRM_RIGHT_LEFT = 3,               /**< Back, Confirm, Right, Left */
+    FRONT_BUTTON_LAYOUT_COUNT                  /**< Number of layouts */
   };
 
-  // Front button hardware identifiers (for remapping)
+  /**
+   * Front button hardware pin identifiers.
+   * Used to map physical GPIO pins to logical button functions.
+   */
   enum FRONT_BUTTON_HARDWARE {
-    FRONT_HW_BACK = 0,
-    FRONT_HW_CONFIRM = 1,
-    FRONT_HW_LEFT = 2,
-    FRONT_HW_RIGHT = 3,
+    FRONT_HW_BACK = 0,                         /**< Back button GPIO identifier */
+    FRONT_HW_CONFIRM = 1,                      /**< Confirm button GPIO identifier */
+    FRONT_HW_LEFT = 2,                         /**< Left navigation GPIO identifier */
+    FRONT_HW_RIGHT = 3,                        /**< Right navigation GPIO identifier */
     FRONT_BUTTON_HARDWARE_COUNT
   };
 
-  // Side button layout options
-  // Default: Previous, Next
-  // Swapped: Next, Previous
+  /* Side button navigation mode (Page Previous/Next order). */
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTON_LAYOUT_COUNT };
 
-  // Font family options
   enum FONT_FAMILY { BOOKERLY = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
-  // Font size options
+
   enum FONT_SIZE { X_SMALL = 0, SMALL = 1, MEDIUM = 2, LARGE = 3, EXTRA_LARGE = 4, FONT_SIZE_COUNT };
   enum TEXT_DARKNESS {
     TEXT_DARKNESS_NORMAL = 0,
@@ -138,7 +211,7 @@ class CrossPointSettings {
     PARAGRAPH_ALIGNMENT_COUNT
   };
 
-  // Auto-sleep timeout options (in minutes)
+  /* Auto-sleep timeout in minutes. */
   enum SLEEP_TIMEOUT {
     SLEEP_1_MIN = 0,
     SLEEP_5_MIN = 1,
@@ -148,7 +221,7 @@ class CrossPointSettings {
     SLEEP_TIMEOUT_COUNT
   };
 
-  // E-ink refresh frequency (pages between full refreshes)
+  /* Page count between full screen refreshes. */
   enum REFRESH_FREQUENCY {
     REFRESH_1 = 0,
     REFRESH_5 = 1,
@@ -166,7 +239,7 @@ class CrossPointSettings {
     READER_REFRESH_MODE_COUNT
   };
 
-  // Short power button press actions
+  /* Power button short-press action mapping. */
   enum SHORT_PWRBTN {
     IGNORE = 0,
     SLEEP = 1,
@@ -177,10 +250,10 @@ class CrossPointSettings {
   };
   enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_INVERTED = 2, TILT_PAGE_TURN_COUNT };
 
-  // Hide battery percentage
+  /* Battery percentage visibility control. */
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
-  // Page turn button long-press behavior
+  /* Page button long-press action configuration. */
   enum LONG_PRESS_BUTTON_BEHAVIOR {
     LONG_PRESS_OFF = 0,
     LONG_PRESS_CHAPTER_SKIP = 1,
@@ -188,7 +261,6 @@ class CrossPointSettings {
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
-  // UI Theme
   enum UI_THEME { LYRA = 0, LYRA_CUSTOM = 1, LYRA_CAROUSEL = 2, UI_THEME_COUNT };
   enum DATE_FORMAT { DATE_DD_MM_YYYY = 0, DATE_MM_DD_YYYY = 1, DATE_YYYY_MM_DD = 2, DATE_FORMAT_COUNT };
   enum DISPLAY_HEADER {

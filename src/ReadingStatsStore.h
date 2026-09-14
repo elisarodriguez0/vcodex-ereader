@@ -8,69 +8,118 @@
 
 #include "CrossPointSettings.h"
 
+/**
+ * Get the user-configured daily reading goal in milliseconds.
+ */
 inline uint64_t getDailyReadingGoalMs() { return SETTINGS.getDailyGoalMs(); }
 
+/**
+ * Daily reading statistics for a single book.
+ * 
+ * Represents total reading time on a specific calendar day (UTC).
+ * Note: No wall-clock time breakdown is available here;
+ * see ReadingPeriodDayStats for time-of-day data.
+ */
 struct ReadingDayStats {
-  uint32_t dayOrdinal = 0;
-  uint64_t readingMs = 0;
+  uint32_t dayOrdinal = 0;  /**< Days since epoch (Jan 1, 1970 UTC) */
+  uint64_t readingMs = 0;   /**< Total reading time in milliseconds */
 };
 
-// Reading time for which an actual wall-clock timestamp is known.
-// Unknown/legacy time is intentionally not represented here.
+/**
+ * Daily reading statistics with time-of-day breakdown.
+ * 
+ * Extends ReadingDayStats by segmenting daily reading into three periods:
+ * - Morning: 06:00-12:59 (often used for commute/breakfast reading)
+ * - Afternoon: 13:00-20:59 (work day afternoon breaks)
+ * - Night: 21:00-05:59 (evening/night reading)
+ * 
+ * Used for detailed reading analytics and trends over time.
+ */
 struct ReadingPeriodDayStats {
-  uint32_t dayOrdinal = 0;
-  uint32_t morningMs = 0;    // 06:00-13:00
-  uint32_t afternoonMs = 0;  // 13:00-21:00
-  uint32_t nightMs = 0;      // 21:00-06:00
+  uint32_t dayOrdinal = 0;    /**< Days since epoch (UTC) */
+  uint32_t morningMs = 0;     /**< Reading time 06:00-12:59 */
+  uint32_t afternoonMs = 0;   /**< Reading time 13:00-20:59 */
+  uint32_t nightMs = 0;       /**< Reading time 21:00-05:59 */
 };
 
+/**
+ * Complete reading statistics for a single book.
+ * 
+ * Tracks:
+ * - Cumulative reading time (total and per-session)
+ * - Progress through the book (current and chapter level)
+ * - Completion status and timestamp
+ * - Session count and duration
+ * - Daily breakdown of reading activity
+ * 
+ * Used to populate the Reading Stats screen and achievement tracking.
+ */
 struct ReadingBookStats {
-  std::string bookId;
-  std::string path;
-  std::vector<std::string> knownPaths;
-  std::string title;
-  std::string author;
-  std::string coverBmpPath;
-  std::string chapterTitle;
-  std::vector<ReadingDayStats> readingDays;
-  std::vector<ReadingPeriodDayStats> timedReadingDays;
-  uint64_t totalReadingMs = 0;
-  uint32_t sessions = 0;
-  uint32_t lastSessionMs = 0;
-  uint32_t firstReadAt = 0;
-  uint32_t lastReadAt = 0;
-  uint32_t completedAt = 0;
-  uint8_t lastProgressPercent = 0;
-  uint8_t chapterProgressPercent = 0;
-  bool completed = false;
+  std::string bookId;                         /**< Unique identifier (ISBN, EPUB id, hash) */
+  std::string path;                           /**< Current file path on SD card */
+  std::vector<std::string> knownPaths;        /**< Alternative paths (moved/renamed files) */
+  std::string title;                          /**< Display title */
+  std::string author;                         /**< Author name */
+  std::string coverBmpPath;                   /**< Cached cover image path */
+  std::string chapterTitle;                   /**< Current chapter name */
+  std::vector<ReadingDayStats> readingDays;           /**< Daily totals without time-of-day */
+  std::vector<ReadingPeriodDayStats> timedReadingDays; /**< Daily totals with time periods */
+  uint64_t totalReadingMs = 0;                /**< Total cumulative reading time */
+  uint32_t sessions = 0;                      /**< Number of reading sessions */
+  uint32_t lastSessionMs = 0;                 /**< Duration of most recent session */
+  uint32_t firstReadAt = 0;                   /**< Unix timestamp of first read */
+  uint32_t lastReadAt = 0;                    /**< Unix timestamp of most recent read */
+  uint32_t completedAt = 0;                   /**< Unix timestamp when book completed (0 if not) */
+  uint8_t lastProgressPercent = 0;            /**< Current progress through book (0-100) */
+  uint8_t chapterProgressPercent = 0;         /**< Current chapter progress (0-100) */
+  bool completed = false;                     /**< Whether book has been finished */
 };
 
+/**
+ * Snapshot of the current reading session in progress.
+ * 
+ * Captures session metadata at specific points (start, current, end).
+ * Used by the device to track reading streaks and session statistics
+ * without persisting to disk on every page turn.
+ */
 struct ReadingSessionSnapshot {
-  bool valid = false;
-  uint32_t serial = 0;
-  std::string bookId;
-  std::string path;
-  uint32_t sessionMs = 0;
-  bool counted = false;
-  bool completedThisSession = false;
-  uint8_t startProgressPercent = 0;
-  uint8_t endProgressPercent = 0;
+  bool valid = false;                  /**< Whether this snapshot contains valid data */
+  uint32_t serial = 0;                 /**< Session serial number (incremented per new session) */
+  std::string bookId;                  /**< Current book ID */
+  std::string path;                    /**< Current book path */
+  uint32_t sessionMs = 0;              /**< Reading time accumulated in this session */
+  bool counted = false;                /**< Whether this session is counted toward stats */
+  bool completedThisSession = false;   /**< Whether book was finished in this session */
+  uint8_t startProgressPercent = 0;    /**< Progress % at session start */
+  uint8_t endProgressPercent = 0;      /**< Progress % at session end */
 };
 
+/**
+ * Historical log entry for a reading session.
+ * 
+ * Persisted to reading_log.jsonl for detailed analytics and manual correction.
+ * Supports both legacy (untimed) and wall-clock timed entries.
+ */
 struct ReadingSessionLogEntry {
-  uint32_t dayOrdinal = 0;
-  uint32_t sessionMs = 0;
-  std::string bookId;
-  std::string path;
+  uint32_t dayOrdinal = 0;             /**< Calendar day (days since epoch UTC) */
+  uint32_t sessionMs = 0;              /**< Reading duration in milliseconds */
+  std::string bookId;                  /**< Book identifier */
+  std::string path;                    /**< Book file path */
 
-  // Zero means that this is legacy/untimed data. Never fabricate a clock time.
-  uint32_t startAt = 0;
-  uint32_t endAt = 0;
+  /**
+   * Wall-clock timestamps for session boundaries.
+   * Zero means legacy/untimed data. Never fabricate timestamps.
+   */
+  uint32_t startAt = 0;                /**< Unix timestamp of session start (or 0 if unknown) */
+  uint32_t endAt = 0;                  /**< Unix timestamp of session end (or 0 if unknown) */
 
-  // Known-time distribution for this session. Legacy entries remain zero.
-  uint32_t morningMs = 0;
-  uint32_t afternoonMs = 0;
-  uint32_t nightMs = 0;
+  /**
+   * Time-of-day breakdown for timed sessions.
+   * Legacy/untimed sessions have all zeros.
+   */
+  uint32_t morningMs = 0;              /**< Reading time during 06:00-12:59 */
+  uint32_t afternoonMs = 0;            /**< Reading time during 13:00-20:59 */
+  uint32_t nightMs = 0;                /**< Reading time during 21:00-05:59 */
 };
 
 class ReadingStatsStore;
