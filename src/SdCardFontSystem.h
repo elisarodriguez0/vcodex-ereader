@@ -153,3 +153,4 @@ class SdCardFontSystem {
 
   /* Flag indicating fonts have been successfully loaded */
   std::atomic<bool> registryLoaded_{false};
+};

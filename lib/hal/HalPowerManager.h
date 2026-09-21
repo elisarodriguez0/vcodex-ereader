@@ -17,7 +17,8 @@ class HalPowerManager {
   int normalFreq = 0;  // MHz
   bool isLowPower = false;
 
-  mutable int _batteryCachedPercent = 0;         // Last read battery percentage (0-100)
+  mutable int _batteryCachedPercent = 0;         // Last accepted battery percentage (0-100)
+  mutable bool _batteryHasSample = false;        // 0% is valid; do not use it as an "uninitialized" sentinel
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
 
   enum LockMode { None, NormalSpeed };
@@ -31,19 +32,10 @@ class HalPowerManager {
 
   void begin();
 
-  // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
-
-  // Setup wake up GPIO and enter deep sleep
-  // Should be called inside main loop() to handle the currentLockMode
   void startDeepSleep(HalGPIO& gpio) const;
-
-  // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
-  // RAII helper class to manage power saving locks
-  // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
-  // full performance. When the Lock instance is destroyed (goes out of scope), power saving will be re-enabled.
   class Lock {
     friend class HalPowerManager;
     bool valid = false;
@@ -52,7 +44,6 @@ class HalPowerManager {
     explicit Lock();
     ~Lock();
 
-    // Non-copyable and non-movable
     Lock(const Lock&) = delete;
     Lock& operator=(const Lock&) = delete;
     Lock(Lock&&) = delete;
